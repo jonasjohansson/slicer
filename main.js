@@ -767,8 +767,8 @@ function placeholder() {
 const presets = {
   'Head (Lee Perry-Smith)': { url: 'models/lee-perry-smith.glb', ext: 'glb', up: 'y' },
   'Actaeon':                { url: 'models/actaeon.glb',         ext: 'glb', up: 'y-down' },
-  'Plato bust':             { url: 'models/plato.glb',           ext: 'glb', up: 'y' },
-  'Pan':                    { url: 'models/pan.glb',             ext: 'glb', up: 'z' },
+  'Plato bust':             { url: 'models/plato.glb',           ext: 'glb', up: 'y',     spinY: -180 },
+  'Pan':                    { url: 'models/pan.glb',             ext: 'glb', up: 'z',     spinY: -180 },
   'Aion (Louvre)':          { url: 'models/aion.glb',            ext: 'glb', up: 'z' },
   'Sleeping Venus':         { url: 'models/sleeping-venus.glb',  ext: 'glb', up: 'y-down' },
 };
