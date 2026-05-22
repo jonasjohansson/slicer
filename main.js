@@ -64,11 +64,47 @@ const rimLight = new THREE.DirectionalLight(0xffd8a8, 1.4);
 rimLight.position.set(-2, 3, -6);
 scene.add(rimLight);
 
-const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(40, 40),
-  new THREE.ShadowMaterial({ opacity: 0.55, color: 0x000000 })
-);
-ground.rotation.x = -Math.PI / 2;
+// ---- backdrop: photo-studio cyclorama (curved floor → back wall) ----
+function buildCycGeometry() {
+  const w = 24, d = 24, h = 12;     // width along X, depth along Z, back-wall height
+  const curveD = 3, curveH = 3;     // curve span in Z and Y
+  const segC = 24, segX = 48;
+
+  // profile in (z, y), from front floor edge to top of back wall
+  const profile = [[d / 2, 0], [-d / 2 + curveD, 0]];
+  for (let i = 1; i <= segC; i++) {
+    const t = i / segC;
+    profile.push([
+      -d / 2 + curveD * (1 - Math.sin(t * Math.PI / 2)),
+      curveH * (1 - Math.cos(t * Math.PI / 2)),
+    ]);
+  }
+  profile.push([-d / 2, h]);
+
+  const positions = [], indices = [];
+  const Np = profile.length;
+  for (let xi = 0; xi <= segX; xi++) {
+    const x = (xi / segX - 0.5) * w;
+    for (const [z, y] of profile) positions.push(x, y, z);
+  }
+  for (let xi = 0; xi < segX; xi++) {
+    for (let pi = 0; pi < Np - 1; pi++) {
+      const a = xi * Np + pi;
+      const b = xi * Np + (pi + 1);
+      const c = (xi + 1) * Np + (pi + 1);
+      const dI = (xi + 1) * Np + pi;
+      indices.push(a, b, c, a, c, dI);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+  return g;
+}
+
+const cycMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.95, metalness: 0.0 });
+const ground = new THREE.Mesh(buildCycGeometry(), cycMat);
 ground.position.y = -1.05;
 ground.receiveShadow = true;
 scene.add(ground);
@@ -109,11 +145,13 @@ const params = {
   volume: -10,
   reverb: 0.45,
   filterHz: 2200,
-  threshold: 0.35,
+  threshold: 0.15,
   skip: 3,
   noteDur: '8n',
   // orientation
   orient: 'y',
+  // visual gap between adjacent slices (fraction of band height, 0–0.5)
+  gap: 0.04,
 };
 
 // ---- file load ----
@@ -288,9 +326,14 @@ function rebuildSlices() {
   const baseMat = buildMaterial();
   const normalVec = new THREE.Vector3();
 
+  // shrink each band slightly so adjacent slices don't share clip planes / cap planes,
+  // which avoids Z-fighting and "noisy" seams at the boundary
+  const half = step * 0.5 * (1 - Math.min(0.95, Math.max(0, params.gap)));
+
   for (let i = 0; i < n; i++) {
-    const a = min + i * step;
-    const b = a + step;
+    const center = min + (i + 0.5) * step;
+    const a = center - half;
+    const b = center + half;
     let mesh, planeMin = null, planeMax = null;
 
     if (params.fill === 'filled') {
@@ -441,7 +484,6 @@ function signedArea(loop) {
 function setShadowsEnabled(on) {
   renderer.shadowMap.enabled = on;
   keyLight.castShadow = on;
-  ground.visible = on;
   for (const s of slices) s.mesh.material.needsUpdate = true;
 }
 
@@ -518,10 +560,25 @@ function disposeAudio() {
 
 async function enableSound() {
   if (toneStarted) return;
-  await Tone.start();
-  buildAudio();
-  toneStarted = true;
-  setStatus('Sound on · drag any slider to hear it');
+  try {
+    await Tone.start();
+    buildAudio();
+    toneStarted = true;
+    // sound check — play one note so user knows audio is wired
+    setTimeout(() => {
+      if (!synth || !slices.length) return;
+      try {
+        const f = noteForSlice(Math.floor(slices.length / 2), slices.length);
+        synth.triggerAttackRelease(f, '2n', undefined, 0.6);
+      } catch (e) {}
+    }, 200);
+    setStatus('Sound on');
+  } catch (err) {
+    console.error('Audio init failed:', err);
+    setStatus('Audio failed: ' + err.message, true);
+    params.sound = false;
+    if (paneReady) pane.refresh();
+  }
 }
 
 function disableSound() {
@@ -600,16 +657,15 @@ function tick() {
       s.mesh.position.set(offX, offY, offZ);
 
       // peak detection — trigger a note on rising edge through threshold
-      if (audioOn && (i % params.skip === 0) && triggerBudget > 0) {
-        const displ = Math.abs(offX) + Math.abs(offZ) + Math.abs(offY);
-        if (displ > threshold && prevDispl[i] <= threshold) {
-          const freq = noteForSlice(i, slices.length);
-          const vel = Math.min(1, 0.3 + displ * 0.5);
-          try { synth.triggerAttackRelease(freq, params.noteDur, undefined, vel); } catch (e) {}
-          triggerBudget--;
-        }
-        prevDispl[i] = displ;
+      const displ = Math.abs(offX) + Math.abs(offZ) + Math.abs(offY);
+      if (audioOn && (i % params.skip === 0) && triggerBudget > 0
+          && displ > threshold && prevDispl[i] <= threshold) {
+        const freq = noteForSlice(i, slices.length);
+        const vel = Math.min(1, 0.3 + displ * 0.5);
+        try { synth.triggerAttackRelease(freq, params.noteDur, undefined, vel); } catch (e) {}
+        triggerBudget--;
       }
+      prevDispl[i] = displ;
     }
   }
 
@@ -678,6 +734,7 @@ const fSlice = pane.addFolder({ title: 'Slicing' });
 fSlice.addBinding(params, 'slices', { min: 2, max: 200, step: 1 }).on('change', rebuildSlices);
 fSlice.addBinding(params, 'sliceAxis', { options: { Y_horizontal: 'y', X_vertical: 'x', Z_depth: 'z' } }).on('change', rebuildSlices);
 fSlice.addBinding(params, 'fill', { options: { Shell: 'shell', Filled: 'filled' } }).on('change', rebuildSlices);
+fSlice.addBinding(params, 'gap', { label: 'gap', min: 0, max: 0.6, step: 0.005 }).on('change', rebuildSlices);
 fSlice.addBinding(params, 'orient', {
   label: 'orient',
   options: { 'Y up': 'y', 'Y down': 'y-down', 'Z up': 'z', 'Z down': 'z-down', 'X up': 'x', 'X down': 'x-down' },
@@ -694,7 +751,10 @@ fAnim.addBinding(params, 'rotate', { label: 'auto-rotate' });
 const fLook = pane.addFolder({ title: 'Look' });
 fLook.addBinding(params, 'material', { options: { Standard: 'standard', Matte: 'matte', Clay: 'clay', Porcelain: 'porcelain', Metal: 'metal', Normals: 'normal' } }).on('change', applyMaterial);
 fLook.addBinding(params, 'meshColor', { label: 'model' }).on('change', applyMaterial);
-fLook.addBinding(params, 'bgColor', { label: 'background' }).on('change', () => scene.background = new THREE.Color(params.bgColor));
+fLook.addBinding(params, 'bgColor', { label: 'background' }).on('change', () => {
+  scene.background = new THREE.Color(params.bgColor);
+  cycMat.color.set(params.bgColor);
+});
 fLook.addBinding(params, 'exposure', { min: 0.2, max: 2.5, step: 0.01 }).on('change', () => renderer.toneMappingExposure = params.exposure);
 fLook.addBinding(params, 'shadows').on('change', () => setShadowsEnabled(params.shadows));
 fLook.addBinding(params, 'groundY', { label: 'ground Y', min: -3, max: 1, step: 0.01 }).on('change', () => ground.position.y = params.groundY);
@@ -715,6 +775,54 @@ fSound.addBinding(params, 'skip', { label: 'every Nth slice', min: 1, max: 10, s
 fSound.addBinding(params, 'noteDur', { label: 'note', options: { '64n': '64n', '32n': '32n', '16n': '16n', '8n': '8n', '4n': '4n' } });
 
 pane.addButton({ title: 'Reset view' }).on('click', fitCamera);
+pane.addButton({ title: 'Screenshot' }).on('click', screenshot);
+pane.addButton({ title: 'Copy permalink' }).on('click', copyPermalink);
+
+// ---- permalink + screenshot ----
+function screenshot() {
+  renderer.render(scene, camera);  // ensure latest frame
+  renderer.domElement.toBlob((blob) => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `slicer-${Date.now()}.png`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setStatus('Screenshot saved');
+  }, 'image/png');
+}
+
+function encodeParams() {
+  const o = { ...params };
+  delete o.sound;            // don't autoplay on open
+  return btoa(JSON.stringify(o)).replace(/=+$/, '');
+}
+
+function decodeParams(hash) {
+  try {
+    const s = atob(hash.replace(/^#/, '') + '==='.slice(0, (4 - hash.length % 4) % 4));
+    return JSON.parse(s);
+  } catch (e) { return null; }
+}
+
+function applyParamsFromHash() {
+  if (!location.hash || location.hash.length < 4) return false;
+  const o = decodeParams(location.hash);
+  if (!o) return false;
+  for (const k of Object.keys(o)) if (k in params) params[k] = o[k];
+  return true;
+}
+
+function copyPermalink() {
+  const hash = '#' + encodeParams();
+  const url = location.origin + location.pathname + hash;
+  navigator.clipboard.writeText(url).then(
+    () => setStatus('Permalink copied'),
+    () => setStatus('Copy failed — ' + url.slice(0, 60) + '…', true),
+  );
+  history.replaceState(null, '', hash);
+}
 
 // presets folder (load on selection — no separate Load button)
 const presetNames = Object.keys(presets);
@@ -724,6 +832,16 @@ fPresets.addBinding(presetState, 'which', {
   label: 'model',
   options: Object.fromEntries(presetNames.map(k => [k, k])),
 }).on('change', (ev) => loadPreset(ev.value));
+
+// apply permalink params (if any) before loading the default model
+const hadHash = applyParamsFromHash();
+if (hadHash) {
+  pane.refresh();
+  scene.background = new THREE.Color(params.bgColor);
+  cycMat.color.set(params.bgColor);
+  renderer.toneMappingExposure = params.exposure;
+  setShadowsEnabled(params.shadows);
+}
 
 // default model on startup — fall back to placeholder if it fails
 loadPreset(presetNames[0]).catch(() => placeholder());

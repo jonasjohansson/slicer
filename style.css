@@ -46,6 +46,18 @@ canvas { display: block; }
   pointer-events: none;
 }
 
+#brand {
+  position: fixed;
+  bottom: 12px;
+  right: 16px;
+  font-size: 11px;
+  letter-spacing: 0.4em;
+  color: #aaa;
+  z-index: 9;
+  pointer-events: none;
+  font-weight: 500;
+}
+
 #status.err { color: #ff7066; }
 
 /* Tweakpane container — pinned top-right */
