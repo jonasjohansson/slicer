@@ -50,7 +50,8 @@
   "imports": {
     "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
     "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
-    "tweakpane": "https://esm.sh/tweakpane@4.0.4"
+    "tweakpane": "https://esm.sh/tweakpane@4.0.4",
+    "earcut": "https://esm.sh/earcut@2.2.4"
   }
 }
 </script>
@@ -63,6 +64,7 @@ import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { Pane } from 'tweakpane';
+import earcut from 'earcut';
 
 // ---- renderer ----
 const stage = document.getElementById('stage');
@@ -152,6 +154,7 @@ const params = {
   exposure: 1.0,
   shadows: true,
   groundY: -1.05,
+  fill: 'shell',  // 'shell' | 'filled'
 };
 
 // ---- file load ----
@@ -253,6 +256,8 @@ function clearSlices() {
       if (Array.isArray(m.material)) m.material.forEach(mm => mm.dispose());
       else m.material.dispose();
     }
+    // dispose slab geometries (filled mode); shell-mode meshes share baseGeometry
+    if (m.geometry && m.geometry !== baseGeometry) m.geometry.dispose();
   }
   slices = [];
 }
@@ -301,15 +306,25 @@ function rebuildSlices() {
   for (let i = 0; i < n; i++) {
     const a = min + i * step;
     const b = a + step;
-    normalVec.set(0,0,0).setComponent(axisIndex, 1);
-    const planeMin = new THREE.Plane(normalVec.clone(), -a);
-    normalVec.set(0,0,0).setComponent(axisIndex, -1);
-    const planeMax = new THREE.Plane(normalVec.clone(), b);
 
-    const mat = baseMat.clone();
-    mat.clippingPlanes = [planeMin, planeMax];
+    let mesh, planeMin = null, planeMax = null;
 
-    const mesh = new THREE.Mesh(baseGeometry, mat);
+    if (params.fill === 'filled') {
+      const slabGeom = buildSlabGeometry(baseGeometry, axisIndex, a, b);
+      if (!slabGeom) continue;
+      const mat = baseMat.clone();
+      mesh = new THREE.Mesh(slabGeom, mat);
+    } else {
+      normalVec.set(0,0,0).setComponent(axisIndex, 1);
+      planeMin = new THREE.Plane(normalVec.clone(), -a);
+      normalVec.set(0,0,0).setComponent(axisIndex, -1);
+      planeMax = new THREE.Plane(normalVec.clone(), b);
+
+      const mat = baseMat.clone();
+      mat.clippingPlanes = [planeMin, planeMax];
+      mesh = new THREE.Mesh(baseGeometry, mat);
+    }
+
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     sliceGroup.add(mesh);
@@ -322,6 +337,142 @@ function rebuildSlices() {
     });
   }
   baseMat.dispose();
+}
+
+// ---- cross-section slab builder ----
+// Intersect baseGeometry with the slice plane at mid-axis, stitch segments into
+// closed loops, triangulate the loops, and build a closed slab between [aAxis, bAxis].
+function buildSlabGeometry(geom, axisIndex, aAxis, bAxis) {
+  const midAxis = (aAxis + bAxis) * 0.5;
+  const pos = geom.attributes.position.array;
+  const [uIdx, vIdx] = axisIndex === 0 ? [1, 2] : axisIndex === 1 ? [0, 2] : [0, 1];
+
+  // 1. collect plane-triangle intersection segments
+  const segments = [];
+  for (let i = 0; i < pos.length; i += 9) {
+    const a = [pos[i], pos[i+1], pos[i+2]];
+    const b = [pos[i+3], pos[i+4], pos[i+5]];
+    const c = [pos[i+6], pos[i+7], pos[i+8]];
+    const pts = [];
+    const tryEdge = (p, q) => {
+      const pa = p[axisIndex], qa = q[axisIndex];
+      const sp = pa - midAxis, sq = qa - midAxis;
+      if (sp === 0 && sq === 0) return;
+      if (sp * sq < 0) {
+        const t = sp / (sp - sq);
+        pts.push([p[uIdx] + t * (q[uIdx] - p[uIdx]), p[vIdx] + t * (q[vIdx] - p[vIdx])]);
+      } else if (sp === 0) {
+        pts.push([p[uIdx], p[vIdx]]);
+      }
+    };
+    tryEdge(a, b); tryEdge(b, c); tryEdge(c, a);
+    if (pts.length >= 2) segments.push([pts[0], pts[1]]);
+  }
+  if (segments.length === 0) return null;
+
+  // 2. stitch into closed loops
+  const loops = stitchLoops(segments);
+  if (loops.length === 0) return null;
+
+  // 3. build slab geometry
+  const positions = [];
+  const yTop = bAxis, yBot = aAxis;
+
+  const make3 = (u, v, axisVal) => {
+    const p = [0, 0, 0];
+    p[uIdx] = u; p[vIdx] = v; p[axisIndex] = axisVal;
+    return p;
+  };
+
+  for (let loop of loops) {
+    if (loop.length < 3) continue;
+    // ensure CCW winding for top cap
+    if (signedArea(loop) < 0) loop = loop.slice().reverse();
+
+    const flat = [];
+    for (const p of loop) flat.push(p[0], p[1]);
+    const tris = earcut(flat);
+    if (tris.length === 0) continue;
+
+    // top cap (axisVal = yTop)
+    for (let i = 0; i < tris.length; i += 3) {
+      const p0 = loop[tris[i]], p1 = loop[tris[i+1]], p2 = loop[tris[i+2]];
+      positions.push(...make3(p0[0], p0[1], yTop));
+      positions.push(...make3(p1[0], p1[1], yTop));
+      positions.push(...make3(p2[0], p2[1], yTop));
+    }
+    // bottom cap (axisVal = yBot), reversed
+    for (let i = 0; i < tris.length; i += 3) {
+      const p0 = loop[tris[i]], p1 = loop[tris[i+1]], p2 = loop[tris[i+2]];
+      positions.push(...make3(p0[0], p0[1], yBot));
+      positions.push(...make3(p2[0], p2[1], yBot));
+      positions.push(...make3(p1[0], p1[1], yBot));
+    }
+    // side wall: quads between consecutive loop verts from yBot to yTop
+    for (let i = 0; i < loop.length; i++) {
+      const j = (i + 1) % loop.length;
+      const u1 = loop[i][0], v1 = loop[i][1];
+      const u2 = loop[j][0], v2 = loop[j][1];
+      const p1b = make3(u1, v1, yBot);
+      const p2b = make3(u2, v2, yBot);
+      const p1t = make3(u1, v1, yTop);
+      const p2t = make3(u2, v2, yTop);
+      positions.push(...p1b, ...p2b, ...p2t);
+      positions.push(...p1b, ...p2t, ...p1t);
+    }
+  }
+  if (positions.length === 0) return null;
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+  g.computeVertexNormals();
+  return g;
+}
+
+function stitchLoops(segments, eps = 1e-4) {
+  // hash 2D points to a grid so neighboring endpoints match
+  const inv = 1 / eps;
+  const key = (p) => `${Math.round(p[0]*inv)},${Math.round(p[1]*inv)}`;
+  const endpointToSeg = new Map();
+  for (let i = 0; i < segments.length; i++) {
+    for (let e = 0; e < 2; e++) {
+      const k = key(segments[i][e]);
+      if (!endpointToSeg.has(k)) endpointToSeg.set(k, []);
+      endpointToSeg.get(k).push([i, e]);
+    }
+  }
+
+  const used = new Array(segments.length).fill(false);
+  const loops = [];
+  for (let start = 0; start < segments.length; start++) {
+    if (used[start]) continue;
+    const loop = [];
+    let curIdx = start, curEnd = 0;
+    let safety = segments.length + 1;
+    while (safety-- > 0 && !used[curIdx]) {
+      used[curIdx] = true;
+      loop.push(segments[curIdx][curEnd]);
+      const tip = segments[curIdx][1 - curEnd];
+      const matches = endpointToSeg.get(key(tip)) || [];
+      let next = null;
+      for (const [si, se] of matches) {
+        if (!used[si]) { next = [si, se]; break; }
+      }
+      if (!next) break;
+      curIdx = next[0]; curEnd = next[1];
+    }
+    if (loop.length >= 3) loops.push(loop);
+  }
+  return loops;
+}
+
+function signedArea(loop) {
+  let a = 0;
+  for (let i = 0; i < loop.length; i++) {
+    const j = (i + 1) % loop.length;
+    a += loop[i][0] * loop[j][1] - loop[j][0] * loop[i][1];
+  }
+  return a * 0.5;
 }
 
 function setShadowsEnabled(on) {
@@ -445,6 +596,7 @@ const pane = new Pane({ title: 'Slicer', expanded: true });
 const fSlice = pane.addFolder({ title: 'Slicing' });
 fSlice.addBinding(params, 'slices', { min: 2, max: 200, step: 1 }).on('change', rebuildSlices);
 fSlice.addBinding(params, 'sliceAxis', { options: { Y_horizontal: 'y', X_vertical: 'x', Z_depth: 'z' } }).on('change', rebuildSlices);
+fSlice.addBinding(params, 'fill', { options: { Shell: 'shell', Filled: 'filled' } }).on('change', rebuildSlices);
 
 const fAnim = pane.addFolder({ title: 'Animation' });
 fAnim.addBinding(params, 'pattern', { options: { Sine: 'sine', Noise: 'noise', Jitter: 'jitter', Cascade: 'cascade', 'Explode Y': 'explode' } });
