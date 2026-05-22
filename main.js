@@ -132,10 +132,15 @@ const params = {
   // look
   material: 'standard',
   meshColor: '#e9e6df',
+  ramp: false,
+  colorA: '#e9c8a3',
+  colorB: '#7aa8d8',
   bgColor: '#0a0a0a',
   exposure: 1.0,
   shadows: true,
   groundY: -1.05,
+  respond: true,
+  respondAmt: 0.5,
   // sound
   sound: false,
   synth: 'pad',
@@ -150,6 +155,7 @@ const params = {
   noteDur: '8n',
   // orientation
   orient: 'y',
+  spinY: 0,
   // visual gap between adjacent slices (fraction of band height, 0–0.5)
   gap: 0.04,
 };
@@ -204,19 +210,47 @@ async function loadFromUrl(url, ext) {
   reorient();
 }
 
-function applyUpAxis(object, up) {
-  object.rotation.set(0, 0, 0);
-  if (up === 'y-down')      object.rotation.x = Math.PI;
-  else if (up === 'z')      object.rotation.x = -Math.PI / 2;
-  else if (up === 'z-down') object.rotation.x =  Math.PI / 2;
-  else if (up === 'x')      object.rotation.z = -Math.PI / 2;
-  else if (up === 'x-down') object.rotation.z =  Math.PI / 2;
+function applyUpAxis(object, up, spinDeg = 0) {
+  // tilt first to bring the model right-side-up, then spin around world Y
+  const tilt = new THREE.Euler(0, 0, 0);
+  if (up === 'y-down')      tilt.x = Math.PI;
+  else if (up === 'z')      tilt.x = -Math.PI / 2;
+  else if (up === 'z-down') tilt.x =  Math.PI / 2;
+  else if (up === 'x')      tilt.z = -Math.PI / 2;
+  else if (up === 'x-down') tilt.z =  Math.PI / 2;
+  const qTilt = new THREE.Quaternion().setFromEuler(tilt);
+  const qSpin = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), spinDeg * Math.PI / 180);
+  object.quaternion.copy(qSpin).multiply(qTilt);
 }
 
 function reorient() {
   if (!rawObject) return;
-  applyUpAxis(rawObject, params.orient);
+  applyUpAxis(rawObject, params.orient, params.spinY);
   ingestModel(rawObject);
+  persistOrientation();
+}
+
+function persistOrientation() {
+  const name = presetState && presetState.which;
+  if (name && presets[name]) {
+    presets[name].up = params.orient;
+    presets[name].spinY = params.spinY;
+  }
+}
+
+function exportOrientations() {
+  const data = {};
+  for (const [name, p] of Object.entries(presets)) {
+    data[name] = { up: p.up || 'y', spinY: p.spinY || 0 };
+  }
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'slicer-orientations.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setStatus('Saved slicer-orientations.json');
 }
 
 function ingestModel(object) {
@@ -285,8 +319,13 @@ function clearSlices() {
   prevDispl = [];
 }
 
-function buildMaterial() {
-  const col = new THREE.Color(params.meshColor);
+function colorForSlice(norm) {
+  if (!params.ramp) return new THREE.Color(params.meshColor);
+  return new THREE.Color(params.colorA).lerp(new THREE.Color(params.colorB), norm);
+}
+
+function buildMaterial(colorOverride) {
+  const col = colorOverride || new THREE.Color(params.meshColor);
   const mode = params.material;
   let mat;
   if (mode === 'matte') mat = new THREE.MeshLambertMaterial({ color: col });
@@ -301,14 +340,18 @@ function buildMaterial() {
 }
 
 function applyMaterial() {
-  const baseMat = buildMaterial();
+  if (!bbox || !slices.length) return;
+  const ai = slices[0].axisIndex;
+  const span = bbox.max.getComponent(ai) - bbox.min.getComponent(ai);
   for (const s of slices) {
-    const m = baseMat.clone();
+    const norm = (s.sliceCenter - bbox.min.getComponent(ai)) / span;
+    const col = colorForSlice(norm);
+    s.baseColor = col.clone();
+    const m = buildMaterial(col);
     m.clippingPlanes = s.mesh.material.clippingPlanes;
     s.mesh.material.dispose();
     s.mesh.material = m;
   }
-  baseMat.dispose();
 }
 
 function rebuildSlices() {
@@ -323,7 +366,6 @@ function rebuildSlices() {
   const span = max - min;
   const step = span / n;
 
-  const baseMat = buildMaterial();
   const normalVec = new THREE.Vector3();
 
   // shrink each band slightly so adjacent slices don't share clip planes / cap planes,
@@ -334,20 +376,21 @@ function rebuildSlices() {
     const center = min + (i + 0.5) * step;
     const a = center - half;
     const b = center + half;
+    const norm = (i + 0.5) / n;
+    const color = colorForSlice(norm);
     let mesh, planeMin = null, planeMax = null;
 
     if (params.fill === 'filled') {
       const slabGeom = buildSlabGeometry(baseGeometry, axisIndex, a, b);
       if (!slabGeom) continue;
-      const mat = baseMat.clone();
-      mesh = new THREE.Mesh(slabGeom, mat);
+      mesh = new THREE.Mesh(slabGeom, buildMaterial(color));
     } else {
       normalVec.set(0, 0, 0).setComponent(axisIndex, 1);
       planeMin = new THREE.Plane(normalVec.clone(), -a);
       normalVec.set(0, 0, 0).setComponent(axisIndex, -1);
       planeMax = new THREE.Plane(normalVec.clone(), b);
 
-      const mat = baseMat.clone();
+      const mat = buildMaterial(color);
       mat.clippingPlanes = [planeMin, planeMax];
       mesh = new THREE.Mesh(baseGeometry, mat);
     }
@@ -358,13 +401,14 @@ function rebuildSlices() {
     slices.push({
       mesh, planeMin, planeMax,
       axisIndex,
+      baseColor: color.clone(),
+      energy: 0,
       sliceCenter: (a + b) * 0.5,
       sliceMin: a,
       sliceMax: b,
     });
     prevDispl.push(0);
   }
-  baseMat.dispose();
 }
 
 // ---- cross-section slab builder ----
@@ -656,16 +700,34 @@ function tick() {
 
       s.mesh.position.set(offX, offY, offZ);
 
-      // peak detection — trigger a note on rising edge through threshold
+      // rising-edge peak detection — drives both audio + visual response
       const displ = Math.abs(offX) + Math.abs(offZ) + Math.abs(offY);
-      if (audioOn && (i % params.skip === 0) && triggerBudget > 0
-          && displ > threshold && prevDispl[i] <= threshold) {
-        const freq = noteForSlice(i, slices.length);
-        const vel = Math.min(1, 0.3 + displ * 0.5);
-        try { synth.triggerAttackRelease(freq, params.noteDur, undefined, vel); } catch (e) {}
-        triggerBudget--;
+      const peaked = (i % params.skip === 0) && displ > threshold && prevDispl[i] <= threshold;
+      if (peaked) {
+        s.energy = 1;
+        if (audioOn && triggerBudget > 0) {
+          const freq = noteForSlice(i, slices.length);
+          const vel = Math.min(1, 0.3 + displ * 0.5);
+          try { synth.triggerAttackRelease(freq, params.noteDur, undefined, vel); } catch (e) {}
+          triggerBudget--;
+        }
       }
       prevDispl[i] = displ;
+
+      // decay + apply visual response (scale pop + emissive glow)
+      if (params.respond) {
+        s.energy *= 0.9;
+        const k = 1 + s.energy * 0.05 * params.respondAmt * 2;
+        s.mesh.scale.set(k, k, k);
+        const mat = s.mesh.material;
+        if (mat && mat.emissive && s.baseColor) {
+          mat.emissive.copy(s.baseColor).multiplyScalar(s.energy * params.respondAmt);
+        }
+      } else if (s.mesh.scale.x !== 1) {
+        s.mesh.scale.set(1, 1, 1);
+        const mat = s.mesh.material;
+        if (mat && mat.emissive) mat.emissive.setScalar(0);
+      }
     }
   }
 
@@ -717,6 +779,7 @@ async function loadPreset(name) {
   setStatus(`Loading ${name}…`);
   try {
     params.orient = p.up || 'y';
+    params.spinY = p.spinY || 0;
     if (paneReady) pane.refresh();
     await loadFromUrl(p.url, p.ext);
     setStatus(`Loaded ${name} · ${slices.length} slices`);
@@ -736,9 +799,11 @@ fSlice.addBinding(params, 'sliceAxis', { options: { Y_horizontal: 'y', X_vertica
 fSlice.addBinding(params, 'fill', { options: { Shell: 'shell', Filled: 'filled' } }).on('change', rebuildSlices);
 fSlice.addBinding(params, 'gap', { label: 'gap', min: 0, max: 0.6, step: 0.005 }).on('change', rebuildSlices);
 fSlice.addBinding(params, 'orient', {
-  label: 'orient',
+  label: 'up axis',
   options: { 'Y up': 'y', 'Y down': 'y-down', 'Z up': 'z', 'Z down': 'z-down', 'X up': 'x', 'X down': 'x-down' },
 }).on('change', reorient);
+fSlice.addBinding(params, 'spinY', { label: 'spin Y°', min: -180, max: 180, step: 1 }).on('change', reorient);
+fSlice.addButton({ title: 'Export orientations JSON' }).on('click', exportOrientations);
 
 const fAnim = pane.addFolder({ title: 'Animation' });
 fAnim.addBinding(params, 'pattern', { options: { Sine: 'sine', Noise: 'noise', Jitter: 'jitter', Cascade: 'cascade', 'Explode Y': 'explode' } });
@@ -751,6 +816,11 @@ fAnim.addBinding(params, 'rotate', { label: 'auto-rotate' });
 const fLook = pane.addFolder({ title: 'Look' });
 fLook.addBinding(params, 'material', { options: { Standard: 'standard', Matte: 'matte', Clay: 'clay', Porcelain: 'porcelain', Metal: 'metal', Normals: 'normal' } }).on('change', applyMaterial);
 fLook.addBinding(params, 'meshColor', { label: 'model' }).on('change', applyMaterial);
+fLook.addBinding(params, 'ramp', { label: 'color ramp' }).on('change', applyMaterial);
+fLook.addBinding(params, 'colorA', { label: '↳ low' }).on('change', applyMaterial);
+fLook.addBinding(params, 'colorB', { label: '↳ high' }).on('change', applyMaterial);
+fLook.addBinding(params, 'respond', { label: 'react to triggers' });
+fLook.addBinding(params, 'respondAmt', { label: '↳ amount', min: 0, max: 1, step: 0.01 });
 fLook.addBinding(params, 'bgColor', { label: 'background' }).on('change', () => {
   scene.background = new THREE.Color(params.bgColor);
   cycMat.color.set(params.bgColor);
