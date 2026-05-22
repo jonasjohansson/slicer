@@ -621,7 +621,9 @@ function placeholder() {
 
 // ---- presets ----
 const presets = {
-  // populated in a follow-up — placeholder stays the default until then
+  'Head (Lee Perry-Smith)':   { url: 'models/lee-perry-smith.glb', ext: 'glb' },
+  'Actaeon (classical)':      { url: 'models/actaeon.obj',         ext: 'obj' },
+  'Plato bust (large, 44MB)': { url: 'models/plato.obj',           ext: 'obj' },
 };
 
 async function loadPreset(name) {
