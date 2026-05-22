@@ -1,0 +1,56 @@
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #0a0a0a;
+  color: #f2f2f2;
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Helvetica Neue", sans-serif;
+  overflow: hidden;
+}
+
+canvas { display: block; }
+
+#stage { position: fixed; inset: 0; }
+
+#drop {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  background: rgba(20, 20, 20, 0.85);
+  backdrop-filter: blur(10px);
+  border: 1px dashed #333;
+  border-radius: 8px;
+  padding: 14px 18px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  z-index: 9;
+}
+
+#drop.drag {
+  border-color: #fff;
+  background: #161616;
+}
+
+#drop strong { display: block; letter-spacing: 0.04em; }
+#drop small { color: #888; }
+
+#fileInput { display: none; }
+
+#status {
+  position: fixed;
+  bottom: 12px;
+  left: 16px;
+  font-size: 11px;
+  color: #888;
+  z-index: 9;
+  pointer-events: none;
+}
+
+#status.err { color: #ff7066; }
+
+/* Tweakpane container — pinned top-right */
+.tp-dfwv {
+  top: 16px !important;
+  right: 16px !important;
+  width: 280px !important;
+}
