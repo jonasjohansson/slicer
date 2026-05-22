@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
@@ -139,10 +140,14 @@ async function loadFile(file) {
   }
 }
 
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
+const gltfLoader = new GLTFLoader().setDRACOLoader(dracoLoader);
+
 async function loadFromUrl(url, ext) {
   let object;
   if (ext === 'glb' || ext === 'gltf') {
-    const gltf = await new GLTFLoader().loadAsync(url);
+    const gltf = await gltfLoader.loadAsync(url);
     object = gltf.scene;
   } else if (ext === 'obj') {
     object = await new OBJLoader().loadAsync(url);
@@ -621,9 +626,12 @@ function placeholder() {
 
 // ---- presets ----
 const presets = {
-  'Head (Lee Perry-Smith)':   { url: 'models/lee-perry-smith.glb', ext: 'glb' },
-  'Actaeon (classical)':      { url: 'models/actaeon.obj',         ext: 'obj' },
-  'Plato bust (large, 44MB)': { url: 'models/plato.obj',           ext: 'obj' },
+  'Head (Lee Perry-Smith)': { url: 'models/lee-perry-smith.glb', ext: 'glb' },
+  'Actaeon':                { url: 'models/actaeon.glb',         ext: 'glb' },
+  'Plato bust':             { url: 'models/plato.glb',           ext: 'glb' },
+  'Pan':                    { url: 'models/pan.glb',             ext: 'glb' },
+  'Aion (Louvre)':          { url: 'models/aion.glb',            ext: 'glb' },
+  'Sleeping Venus':         { url: 'models/sleeping-venus.glb',  ext: 'glb' },
 };
 
 async function loadPreset(name) {
