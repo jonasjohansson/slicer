@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Slicer</title>
+<style>
+  :root {
+    --bg: #0c0c0c;
+    --panel: rgba(20,20,20,0.85);
+    --ink: #f2f2f2;
+    --muted: #888;
+    --accent: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Helvetica Neue", sans-serif; }
+  canvas { display: block; }
+
+  #stage { position: fixed; inset: 0; }
+
+  #panel {
+    position: fixed; top: 16px; right: 16px; width: 280px;
+    background: var(--panel); backdrop-filter: blur(10px);
+    border: 1px solid #2a2a2a; border-radius: 10px;
+    padding: 14px 16px; font-size: 12px; line-height: 1.4;
+    z-index: 10;
+  }
+  #panel h1 { font-size: 13px; margin: 0 0 12px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+  .row { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; gap: 8px; }
+  .row label { color: var(--muted); flex: 0 0 auto; }
+  .row input[type=range] { flex: 1; }
+  .row select, .row input[type=color] { background: #111; color: var(--ink); border: 1px solid #2a2a2a; border-radius: 4px; padding: 2px 4px; font: inherit; }
+  .val { color: var(--ink); min-width: 36px; text-align: right; font-variant-numeric: tabular-nums; }
+  button { background: #1a1a1a; color: var(--ink); border: 1px solid #333; border-radius: 6px; padding: 8px 12px; font: inherit; cursor: pointer; width: 100%; }
+  button:hover { background: #222; }
+  .file-zone {
+    border: 1px dashed #333; border-radius: 8px; padding: 18px 8px;
+    text-align: center; cursor: pointer; margin-bottom: 12px;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .file-zone.drag { border-color: var(--accent); background: #161616; }
+  .file-zone small { color: var(--muted); display: block; margin-top: 4px; }
+  #fileInput { display: none; }
+  hr { border: none; border-top: 1px solid #222; margin: 12px 0; }
+  #status { position: fixed; bottom: 12px; left: 16px; font-size: 11px; color: var(--muted); z-index: 10; }
+  #status.err { color: #ff7066; }
+  details { margin-top: 8px; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+
+<div id="panel">
+  <h1>Slicer</h1>
+
+  <label class="file-zone" id="dropZone" for="fileInput">
+    <strong>Drop or click</strong>
+    <small>.glb · .gltf · .obj · .stl</small>
+  </label>
+  <input id="fileInput" type="file" accept=".glb,.gltf,.obj,.stl" />
+
+  <div class="row"><label>Slices</label><input id="slices" type="range" min="2" max="200" value="60" /><span class="val" id="slicesVal">60</span></div>
+  <div class="row"><label>Amplitude</label><input id="amp" type="range" min="0" max="3" step="0.01" value="0.6" /><span class="val" id="ampVal">0.60</span></div>
+  <div class="row"><label>Speed</label><input id="speed" type="range" min="0" max="3" step="0.01" value="0.8" /><span class="val" id="speedVal">0.80</span></div>
+  <div class="row"><label>Frequency</label><input id="freq" type="range" min="0.1" max="10" step="0.01" value="2.0" /><span class="val" id="freqVal">2.00</span></div>
+
+  <div class="row">
+    <label>Pattern</label>
+    <select id="pattern">
+      <option value="sine">Sine wave</option>
+      <option value="noise" selected>Smooth noise</option>
+      <option value="jitter">Jitter</option>
+      <option value="cascade">Cascade</option>
+      <option value="explode">Explode (Y)</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <label>Axis</label>
+    <select id="axis">
+      <option value="x" selected>X (sideways)</option>
+      <option value="z">Z (depth)</option>
+      <option value="xz">X + Z</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <label>Slice axis</label>
+    <select id="sliceAxis">
+      <option value="y" selected>Y (horizontal)</option>
+      <option value="x">X (vertical)</option>
+      <option value="z">Z (front-back)</option>
+    </select>
+  </div>
+
+  <hr />
+
+  <div class="row"><label>Background</label><input id="bgColor" type="color" value="#0c0c0c" /></div>
+  <div class="row"><label>Model color</label><input id="meshColor" type="color" value="#e8e6e1" /></div>
+  <div class="row">
+    <label>Material</label>
+    <select id="material">
+      <option value="standard" selected>Standard</option>
+      <option value="matte">Matte (Lambert)</option>
+      <option value="clay">Clay</option>
+      <option value="normal">Normals</option>
+    </select>
+  </div>
+  <div class="row"><label>Auto-rotate</label><input id="rotate" type="checkbox" /></div>
+
+  <hr />
+  <button id="reset">Reset view</button>
+  <details>
+    <summary>Tips</summary>
+    <small style="color:var(--muted)">
+      Drag to orbit, scroll to zoom, right-drag to pan.<br>
+      Try slice axis = Y and amplitude 0.4–0.8 for the bust effect. Higher frequency = more wobble; more slices = smoother stack.
+    </small>
+  </details>
+</div>
+
+<div id="status">Drop a 3D file to begin.</div>
+
+<!-- Three.js + loaders via importmap -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+
+// ---- scene ----
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.localClippingEnabled = true;
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#0c0c0c');
+
+const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.01, 1000);
+camera.position.set(0, 0, 5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+
+// lights
+const hemi = new THREE.HemisphereLight(0xffffff, 0x222222, 0.9);
+scene.add(hemi);
+const key = new THREE.DirectionalLight(0xffffff, 1.2);
+key.position.set(3, 5, 4);
+scene.add(key);
+const fill = new THREE.DirectionalLight(0xffffff, 0.4);
+fill.position.set(-4, 2, -2);
+scene.add(fill);
+
+// ---- state ----
+const sliceGroup = new THREE.Group();
+scene.add(sliceGroup);
+let baseGeometry = null; // merged BufferGeometry of loaded model in unit-bounds
+let bbox = null;
+let slices = []; // [{ mesh, planeMin, planeMax, center, t0 }]
+
+const ui = {
+  slices: document.getElementById('slices'),
+  amp: document.getElementById('amp'),
+  speed: document.getElementById('speed'),
+  freq: document.getElementById('freq'),
+  pattern: document.getElementById('pattern'),
+  axis: document.getElementById('axis'),
+  sliceAxis: document.getElementById('sliceAxis'),
+  bgColor: document.getElementById('bgColor'),
+  meshColor: document.getElementById('meshColor'),
+  material: document.getElementById('material'),
+  rotate: document.getElementById('rotate'),
+  reset: document.getElementById('reset'),
+  status: document.getElementById('status'),
+};
+
+function setStatus(msg, isErr=false) {
+  ui.status.textContent = msg;
+  ui.status.classList.toggle('err', !!isErr);
+}
+
+['slices','amp','speed','freq'].forEach(k => {
+  const el = ui[k];
+  const out = document.getElementById(k + 'Val');
+  const upd = () => { out.textContent = (k==='slices') ? el.value : parseFloat(el.value).toFixed(2); };
+  el.addEventListener('input', () => { upd(); if (k === 'slices') rebuildSlices(); });
+  upd();
+});
+ui.pattern.addEventListener('change', () => {});
+ui.axis.addEventListener('change', () => {});
+ui.sliceAxis.addEventListener('change', rebuildSlices);
+ui.bgColor.addEventListener('input', () => scene.background = new THREE.Color(ui.bgColor.value));
+ui.meshColor.addEventListener('input', () => applyMaterial());
+ui.material.addEventListener('change', () => applyMaterial());
+ui.reset.addEventListener('click', () => fitCamera());
+
+// ---- file load ----
+const fileInput = document.getElementById('fileInput');
+const dropZone = document.getElementById('dropZone');
+fileInput.addEventListener('change', e => { if (e.target.files[0]) loadFile(e.target.files[0]); });
+['dragenter','dragover'].forEach(ev => dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.add('drag'); }));
+['dragleave','drop'].forEach(ev => dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.remove('drag'); }));
+dropZone.addEventListener('drop', e => { const f = e.dataTransfer.files[0]; if (f) loadFile(f); });
+
+async function loadFile(file) {
+  setStatus(`Loading ${file.name}…`);
+  const ext = file.name.toLowerCase().split('.').pop();
+  const url = URL.createObjectURL(file);
+
+  try {
+    let object;
+    if (ext === 'glb' || ext === 'gltf') {
+      const gltf = await new GLTFLoader().loadAsync(url);
+      object = gltf.scene;
+    } else if (ext === 'obj') {
+      object = await new OBJLoader().loadAsync(url);
+    } else if (ext === 'stl') {
+      const geom = await new STLLoader().loadAsync(url);
+      geom.computeVertexNormals();
+      object = new THREE.Mesh(geom, new THREE.MeshStandardMaterial());
+    } else {
+      throw new Error('Unsupported format: ' + ext);
+    }
+    ingestModel(object);
+    setStatus(`Loaded ${file.name} · ${slices.length} slices`);
+  } catch (err) {
+    console.error(err);
+    setStatus('Load failed: ' + err.message, true);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function ingestModel(object) {
+  // collect all meshes and merge geometries (transformed into world space relative to object)
+  const geoms = [];
+  object.updateMatrixWorld(true);
+  object.traverse(child => {
+    if (child.isMesh && child.geometry) {
+      let g = child.geometry.clone();
+      // expand indexed geometry to non-indexed BEFORE anything else — setting index=null
+      // without expanding leaves stale positions and shatters the mesh.
+      if (g.index !== null) g = g.toNonIndexed();
+      // strip non-position/normal attributes to keep merge simple
+      const keep = ['position', 'normal'];
+      for (const name of Object.keys(g.attributes)) {
+        if (!keep.includes(name)) g.deleteAttribute(name);
+      }
+      if (!g.attributes.normal) g.computeVertexNormals();
+      g.applyMatrix4(child.matrixWorld);
+      geoms.push(g);
+    }
+  });
+  if (geoms.length === 0) { setStatus('No mesh found in file.', true); return; }
+
+  // simple merge by concatenation
+  const merged = mergeGeometries(geoms);
+  // normalize: center and scale to ~unit size
+  merged.computeBoundingBox();
+  const b = merged.boundingBox;
+  const size = new THREE.Vector3(); b.getSize(size);
+  const center = new THREE.Vector3(); b.getCenter(center);
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const scale = 2.0 / maxDim;
+  merged.translate(-center.x, -center.y, -center.z);
+  merged.scale(scale, scale, scale);
+  merged.computeBoundingBox();
+  bbox = merged.boundingBox.clone();
+  baseGeometry = merged;
+
+  rebuildSlices();
+  fitCamera();
+}
+
+function mergeGeometries(geoms) {
+  // count totals
+  let posCount = 0, normCount = 0;
+  for (const g of geoms) {
+    posCount += g.attributes.position.count;
+    if (g.attributes.normal) normCount += g.attributes.normal.count;
+  }
+  const positions = new Float32Array(posCount * 3);
+  const normals = new Float32Array(posCount * 3);
+  let p = 0;
+  for (const g of geoms) {
+    const pa = g.attributes.position.array;
+    positions.set(pa, p * 3);
+    const na = g.attributes.normal ? g.attributes.normal.array : null;
+    if (na) normals.set(na, p * 3);
+    p += g.attributes.position.count;
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  out.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  return out;
+}
+
+// ---- slicing ----
+function clearSlices() {
+  while (sliceGroup.children.length) {
+    const m = sliceGroup.children.pop();
+    m.geometry && m.geometry.dispose && m.geometry.dispose();
+    if (m.material) {
+      if (Array.isArray(m.material)) m.material.forEach(mm => mm.dispose());
+      else m.material.dispose();
+    }
+  }
+  slices = [];
+}
+
+function buildMaterial() {
+  const col = new THREE.Color(ui.meshColor.value);
+  const mode = ui.material.value;
+  let mat;
+  if (mode === 'matte') mat = new THREE.MeshLambertMaterial({ color: col });
+  else if (mode === 'clay') mat = new THREE.MeshPhongMaterial({ color: col, shininess: 8, specular: 0x222222, flatShading: true });
+  else if (mode === 'normal') mat = new THREE.MeshNormalMaterial({ flatShading: false });
+  else mat = new THREE.MeshStandardMaterial({ color: col, roughness: 0.65, metalness: 0.0 });
+  mat.side = THREE.DoubleSide;
+  mat.clipShadows = true;
+  return mat;
+}
+
+function applyMaterial() {
+  const baseMat = buildMaterial();
+  for (const s of slices) {
+    const m = baseMat.clone();
+    m.clippingPlanes = s.mesh.material.clippingPlanes;
+    s.mesh.material.dispose();
+    s.mesh.material = m;
+  }
+  baseMat.dispose();
+}
+
+function rebuildSlices() {
+  if (!baseGeometry) return;
+  clearSlices();
+
+  const n = parseInt(ui.slices.value, 10);
+  const axis = ui.sliceAxis.value; // 'x' | 'y' | 'z'
+  const axisIndex = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
+  const min = bbox.min.getComponent(axisIndex);
+  const max = bbox.max.getComponent(axisIndex);
+  const span = max - min;
+  const step = span / n;
+
+  const baseMat = buildMaterial();
+
+  const normalVec = new THREE.Vector3();
+  for (let i = 0; i < n; i++) {
+    const a = min + i * step;
+    const b = a + step;
+    // two clipping planes: keep points where (axis >= a) AND (axis <= b)
+    normalVec.set(0,0,0).setComponent(axisIndex, 1);
+    const planeMin = new THREE.Plane(normalVec.clone(), -a);
+    normalVec.set(0,0,0).setComponent(axisIndex, -1);
+    const planeMax = new THREE.Plane(normalVec.clone(), b);
+
+    const mat = baseMat.clone();
+    mat.clippingPlanes = [planeMin, planeMax];
+
+    const mesh = new THREE.Mesh(baseGeometry, mat);
+    sliceGroup.add(mesh);
+    slices.push({
+      mesh,
+      planeMin, planeMax,
+      axisIndex,
+      sliceCenter: (a + b) * 0.5,
+      sliceMin: a,
+      sliceMax: b,
+      t: Math.random() * Math.PI * 2,
+      r: Math.random(),
+    });
+  }
+  baseMat.dispose();
+}
+
+// ---- camera fit ----
+function fitCamera() {
+  if (!bbox) return;
+  const sphere = new THREE.Sphere();
+  bbox.getBoundingSphere(sphere);
+  const dist = sphere.radius / Math.sin((camera.fov * Math.PI/180) / 2);
+  const dir = new THREE.Vector3(0, 0.05, 1).normalize();
+  camera.position.copy(sphere.center).addScaledVector(dir, dist * 1.3);
+  controls.target.copy(sphere.center);
+  camera.near = Math.max(0.001, dist * 0.01);
+  camera.far = dist * 10;
+  camera.updateProjectionMatrix();
+  controls.update();
+}
+
+// ---- animation ----
+function smoothNoise(x) {
+  // sum of sines pseudo-noise
+  return (
+    Math.sin(x) +
+    Math.sin(x * 2.13 + 1.7) * 0.5 +
+    Math.sin(x * 4.27 + 3.1) * 0.25
+  ) / 1.75;
+}
+
+const clock = new THREE.Clock();
+function tick() {
+  const t = clock.getElapsedTime();
+  if (ui.rotate.checked) sliceGroup.rotation.y = t * 0.2;
+
+  if (slices.length) {
+    const amp = parseFloat(ui.amp.value);
+    const speed = parseFloat(ui.speed.value);
+    const freq = parseFloat(ui.freq.value);
+    const pattern = ui.pattern.value;
+    const axisMode = ui.axis.value; // 'x' | 'z' | 'xz'
+    const span = bbox.max.getComponent(slices[0].axisIndex) - bbox.min.getComponent(slices[0].axisIndex);
+
+    for (let i = 0; i < slices.length; i++) {
+      const s = slices[i];
+      const norm = (s.sliceCenter - bbox.min.getComponent(s.axisIndex)) / span; // 0..1
+      let offX = 0, offZ = 0, offY = 0;
+      const phase = t * speed + norm * freq * Math.PI * 2;
+
+      if (pattern === 'sine') {
+        offX = Math.sin(phase) * amp;
+        offZ = Math.cos(phase * 0.7) * amp;
+      } else if (pattern === 'noise') {
+        offX = smoothNoise(phase) * amp;
+        offZ = smoothNoise(phase + 11.3) * amp;
+      } else if (pattern === 'jitter') {
+        // hold value, occasionally flip
+        const seed = Math.floor(t * speed * 4 + i * 7);
+        offX = (Math.sin(seed * 12.9898) * 43758.5453 % 1) * 2 - 1;
+        offX *= amp;
+        offZ = (Math.sin(seed * 78.233) * 12345.678 % 1) * 2 - 1;
+        offZ *= amp;
+      } else if (pattern === 'cascade') {
+        const wave = Math.sin(phase) * 0.5 + 0.5;
+        offX = (norm - 0.5) * 2 * amp * wave;
+        offZ = Math.sin(phase * 1.3) * amp * 0.4;
+      } else if (pattern === 'explode') {
+        // push slices outward from center vertically
+        const k = (Math.sin(t * speed) * 0.5 + 0.5);
+        offY = (norm - 0.5) * amp * k * 2;
+        offX = smoothNoise(phase) * amp * 0.3;
+      }
+
+      if (axisMode === 'z') { offZ = offX; offX = 0; }
+      else if (axisMode === 'xz') { /* both already used */ }
+      else { offZ = (pattern === 'noise' || pattern === 'sine') ? offZ * 0.4 : 0; }
+
+      s.mesh.position.set(offX, offY, offZ);
+    }
+  }
+
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(tick);
+}
+tick();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ---- starter: build a default placeholder so panel is meaningful before upload ----
+function placeholder() {
+  const g = new THREE.IcosahedronGeometry(1, 3);
+  // give it a "bust-like" stretch
+  const pos = g.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const y = pos.getY(i);
+    pos.setX(i, pos.getX(i) * (0.7 + 0.3 * Math.sin(y * 2.0)));
+    pos.setY(i, y * 1.5);
+  }
+  g.computeVertexNormals();
+  g.computeBoundingBox();
+  baseGeometry = g;
+  bbox = g.boundingBox.clone();
+  rebuildSlices();
+  fitCamera();
+}
+placeholder();
+</script>
+</body>
+</html>
