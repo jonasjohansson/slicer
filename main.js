@@ -112,6 +112,8 @@ const params = {
   threshold: 0.35,
   skip: 3,
   noteDur: '8n',
+  // orientation
+  orient: 'y',
 };
 
 // ---- file load ----
@@ -144,6 +146,8 @@ const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
 const gltfLoader = new GLTFLoader().setDRACOLoader(dracoLoader);
 
+let rawObject = null;  // last-loaded scene root, before orientation
+
 async function loadFromUrl(url, ext) {
   let object;
   if (ext === 'glb' || ext === 'gltf') {
@@ -158,7 +162,23 @@ async function loadFromUrl(url, ext) {
   } else {
     throw new Error('Unsupported format: ' + ext);
   }
-  ingestModel(object);
+  rawObject = object;
+  reorient();
+}
+
+function applyUpAxis(object, up) {
+  object.rotation.set(0, 0, 0);
+  if (up === 'y-down')      object.rotation.x = Math.PI;
+  else if (up === 'z')      object.rotation.x = -Math.PI / 2;
+  else if (up === 'z-down') object.rotation.x =  Math.PI / 2;
+  else if (up === 'x')      object.rotation.z = -Math.PI / 2;
+  else if (up === 'x-down') object.rotation.z =  Math.PI / 2;
+}
+
+function reorient() {
+  if (!rawObject) return;
+  applyUpAxis(rawObject, params.orient);
+  ingestModel(rawObject);
 }
 
 function ingestModel(object) {
@@ -625,13 +645,14 @@ function placeholder() {
 }
 
 // ---- presets ----
+// up: 'y' (default), 'y-down' (flip), 'z' (Z-up scan), 'z-down', 'x', 'x-down'
 const presets = {
-  'Head (Lee Perry-Smith)': { url: 'models/lee-perry-smith.glb', ext: 'glb' },
-  'Actaeon':                { url: 'models/actaeon.glb',         ext: 'glb' },
-  'Plato bust':             { url: 'models/plato.glb',           ext: 'glb' },
-  'Pan':                    { url: 'models/pan.glb',             ext: 'glb' },
-  'Aion (Louvre)':          { url: 'models/aion.glb',            ext: 'glb' },
-  'Sleeping Venus':         { url: 'models/sleeping-venus.glb',  ext: 'glb' },
+  'Head (Lee Perry-Smith)': { url: 'models/lee-perry-smith.glb', ext: 'glb', up: 'y' },
+  'Actaeon':                { url: 'models/actaeon.glb',         ext: 'glb', up: 'y-down' },
+  'Plato bust':             { url: 'models/plato.glb',           ext: 'glb', up: 'y' },
+  'Pan':                    { url: 'models/pan.glb',             ext: 'glb', up: 'z' },
+  'Aion (Louvre)':          { url: 'models/aion.glb',            ext: 'glb', up: 'z' },
+  'Sleeping Venus':         { url: 'models/sleeping-venus.glb',  ext: 'glb', up: 'y-down' },
 };
 
 async function loadPreset(name) {
@@ -639,6 +660,8 @@ async function loadPreset(name) {
   if (!p) return;
   setStatus(`Loading ${name}…`);
   try {
+    params.orient = p.up || 'y';
+    if (paneReady) pane.refresh();
     await loadFromUrl(p.url, p.ext);
     setStatus(`Loaded ${name} · ${slices.length} slices`);
   } catch (err) {
@@ -655,6 +678,10 @@ const fSlice = pane.addFolder({ title: 'Slicing' });
 fSlice.addBinding(params, 'slices', { min: 2, max: 200, step: 1 }).on('change', rebuildSlices);
 fSlice.addBinding(params, 'sliceAxis', { options: { Y_horizontal: 'y', X_vertical: 'x', Z_depth: 'z' } }).on('change', rebuildSlices);
 fSlice.addBinding(params, 'fill', { options: { Shell: 'shell', Filled: 'filled' } }).on('change', rebuildSlices);
+fSlice.addBinding(params, 'orient', {
+  label: 'orient',
+  options: { 'Y up': 'y', 'Y down': 'y-down', 'Z up': 'z', 'Z down': 'z-down', 'X up': 'x', 'X down': 'x-down' },
+}).on('change', reorient);
 
 const fAnim = pane.addFolder({ title: 'Animation' });
 fAnim.addBinding(params, 'pattern', { options: { Sine: 'sine', Noise: 'noise', Jitter: 'jitter', Cascade: 'cascade', 'Explode Y': 'explode' } });
@@ -689,15 +716,14 @@ fSound.addBinding(params, 'noteDur', { label: 'note', options: { '64n': '64n', '
 
 pane.addButton({ title: 'Reset view' }).on('click', fitCamera);
 
-// presets folder (populated when models exist)
-if (Object.keys(presets).length > 0) {
-  const fPresets = pane.addFolder({ title: 'Presets', expanded: true });
-  const presetParam = { which: Object.keys(presets)[0] };
-  fPresets.addBinding(presetParam, 'which', {
-    label: 'model',
-    options: Object.fromEntries(Object.keys(presets).map(k => [k, k])),
-  });
-  fPresets.addButton({ title: 'Load' }).on('click', () => loadPreset(presetParam.which));
-}
+// presets folder (load on selection — no separate Load button)
+const presetNames = Object.keys(presets);
+const presetState = { which: presetNames[0] };
+const fPresets = pane.addFolder({ title: 'Presets', expanded: true });
+fPresets.addBinding(presetState, 'which', {
+  label: 'model',
+  options: Object.fromEntries(presetNames.map(k => [k, k])),
+}).on('change', (ev) => loadPreset(ev.value));
 
-placeholder();
+// default model on startup — fall back to placeholder if it fails
+loadPreset(presetNames[0]).catch(() => placeholder());
