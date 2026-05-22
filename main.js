@@ -769,7 +769,7 @@ const presets = {
   'Actaeon':                { url: 'models/actaeon.glb',         ext: 'glb', up: 'y-down' },
   'Plato bust':             { url: 'models/plato.glb',           ext: 'glb', up: 'y',     spinY: -180 },
   'Pan':                    { url: 'models/pan.glb',             ext: 'glb', up: 'z',     spinY: -180 },
-  'Aion (Louvre)':          { url: 'models/aion.glb',            ext: 'glb', up: 'z' },
+  'Aion (Louvre)':          { url: 'models/aion.glb',            ext: 'glb', up: 'z',     spinY: -180 },
   'Sleeping Venus':         { url: 'models/sleeping-venus.glb',  ext: 'glb', up: 'y-down' },
 };
 
