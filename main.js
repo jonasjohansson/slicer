@@ -238,21 +238,6 @@ function persistOrientation() {
   }
 }
 
-function exportOrientations() {
-  const data = {};
-  for (const [name, p] of Object.entries(presets)) {
-    data[name] = { up: p.up || 'y', spinY: p.spinY || 0 };
-  }
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'slicer-orientations.json';
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-  setStatus('Saved slicer-orientations.json');
-}
-
 function ingestModel(object) {
   const geoms = [];
   object.updateMatrixWorld(true);
@@ -803,7 +788,6 @@ fSlice.addBinding(params, 'orient', {
   options: { 'Y up': 'y', 'Y down': 'y-down', 'Z up': 'z', 'Z down': 'z-down', 'X up': 'x', 'X down': 'x-down' },
 }).on('change', reorient);
 fSlice.addBinding(params, 'spinY', { label: 'spin Y°', min: -180, max: 180, step: 1 }).on('change', reorient);
-fSlice.addButton({ title: 'Export orientations JSON' }).on('click', exportOrientations);
 
 const fAnim = pane.addFolder({ title: 'Animation' });
 fAnim.addBinding(params, 'pattern', { options: { Sine: 'sine', Noise: 'noise', Jitter: 'jitter', Cascade: 'cascade', 'Explode Y': 'explode' } });
@@ -896,7 +880,8 @@ function copyPermalink() {
 
 // presets folder (load on selection — no separate Load button)
 const presetNames = Object.keys(presets);
-const presetState = { which: presetNames[0] };
+const DEFAULT_PRESET = 'Plato bust';
+const presetState = { which: DEFAULT_PRESET };
 const fPresets = pane.addFolder({ title: 'Presets', expanded: true });
 fPresets.addBinding(presetState, 'which', {
   label: 'model',
@@ -914,4 +899,4 @@ if (hadHash) {
 }
 
 // default model on startup — fall back to placeholder if it fails
-loadPreset(presetNames[0]).catch(() => placeholder());
+loadPreset(DEFAULT_PRESET).catch(() => placeholder());
