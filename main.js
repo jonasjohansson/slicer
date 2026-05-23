@@ -36,7 +36,8 @@ const envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 scene.environment = envTex;
 
 const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.01, 1000);
-camera.position.set(0, 0.5, 6);
+// start pulled back so the first fitCamera() can ease the camera inward
+camera.position.set(0, 0.4, 14);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -216,24 +217,24 @@ const recState = {
 
 const params = {
   // slicing
-  slices: 60,
+  slices: 72,
   sliceAxis: 'y',
-  fill: 'shell',
+  fill: 'filled',
   // animation
   pattern: 'noise',
-  amp: 0.55,
-  speed: 0.8,
-  freq: 2.0,
+  amp: 0.45,
+  speed: 0.5,
+  freq: 1.6,
   axis: 'x',
-  rotate: false,
+  rotate: true,
   // look
-  material: 'standard',
-  meshColor: '#e9e6df',
-  ramp: false,
-  colorA: '#e9c8a3',
-  colorB: '#7aa8d8',
+  material: 'porcelain',
+  meshColor: '#f0e6d5',
+  ramp: true,
+  colorA: '#f1e6d2',
+  colorB: '#c8a98a',
   bgColor: '#0a0a0a',
-  exposure: 1.0,
+  exposure: 1.05,
   shadows: true,
   groundY: -1.05,
   respond: true,
@@ -254,20 +255,20 @@ const params = {
   orient: 'y',
   spinY: 0,
   // slab thickness as a fraction of band height (1 = touching neighbors, 0 = invisible)
-  thickness: 0.96,
+  thickness: 0.78,
   // lights
-  lightAmbient: 0.12,
-  lightKey: 3.2,
-  lightFill: 0.6,
-  lightRim: 1.4,
+  lightAmbient: 0.10,
+  lightKey: 3.6,
+  lightFill: 0.55,
+  lightRim: 1.6,
   fillColor: '#9fb4ff',
-  rimColor: '#ffd8a8',
-  envIntensity: 1.0,
+  rimColor: '#ffc899',
+  envIntensity: 0.85,
   // post-fx
-  grain: 0.04,
-  aberration: 0.002,
-  contrast: 1.05,
-  saturation: 1.0,
+  grain: 0.03,
+  aberration: 0.0015,
+  contrast: 1.08,
+  saturation: 0.95,
 };
 
 // snapshot the initial values so Reset can restore them
@@ -700,14 +701,18 @@ function setShadowsEnabled(on) {
 }
 
 // ---- camera fit ----
-function fitCamera() {
+let isFirstFit = true;
+let camTween = null;
+
+function fitCamera(forceSnap = false) {
   if (!bbox) return;
   const sphere = new THREE.Sphere();
   bbox.getBoundingSphere(sphere);
   const dist = sphere.radius / Math.sin((camera.fov * Math.PI / 180) / 2);
   const dir = new THREE.Vector3(0.3, 0.15, 1).normalize();
-  camera.position.copy(sphere.center).addScaledVector(dir, dist * 1.4);
-  controls.target.copy(sphere.center);
+  const targetPos = sphere.center.clone().addScaledVector(dir, dist * 1.4);
+  const targetCenter = sphere.center.clone();
+
   camera.near = Math.max(0.001, dist * 0.01);
   camera.far = dist * 20;
   camera.updateProjectionMatrix();
@@ -718,7 +723,23 @@ function fitCamera() {
   sc.left = -r; sc.right = r; sc.top = r; sc.bottom = -r;
   sc.far = Math.max(30, dist * 8);
   sc.updateProjectionMatrix();
-  controls.update();
+
+  if (isFirstFit && !forceSnap) {
+    isFirstFit = false;
+    camTween = {
+      fromPos: camera.position.clone(),
+      toPos: targetPos,
+      fromTarget: controls.target.clone(),
+      toTarget: targetCenter,
+      t0: clock.getElapsedTime(),
+      duration: 1.8,
+    };
+    controls.enabled = false;
+  } else {
+    camera.position.copy(targetPos);
+    controls.target.copy(targetCenter);
+    controls.update();
+  }
 }
 
 // ---- audio (Tone.js) ----
@@ -917,6 +938,18 @@ function tick() {
     }
   }
 
+  // camera intro tween (overrides controls during the animation)
+  if (camTween) {
+    const tt = Math.min(1, (clock.getElapsedTime() - camTween.t0) / camTween.duration);
+    const e = 1 - Math.pow(1 - tt, 3);   // ease-out cubic
+    camera.position.lerpVectors(camTween.fromPos, camTween.toPos, e);
+    controls.target.lerpVectors(camTween.fromTarget, camTween.toTarget, e);
+    if (tt >= 1) {
+      camTween = null;
+      controls.enabled = true;
+    }
+  }
+
   controls.update();
   postPass.uniforms.uTime.value = t;
   composer.render();
@@ -997,7 +1030,7 @@ fAnim.addBinding(params, 'freq', { label: 'frequency', min: 0.1, max: 10, step: 
 fAnim.addBinding(params, 'axis', { label: 'displace', options: { X: 'x', Z: 'z', 'X + Z': 'xz' } });
 fAnim.addBinding(params, 'rotate', { label: 'auto-rotate' });
 
-const fLook = pane.addFolder({ title: 'Look' });
+const fLook = pane.addFolder({ title: 'Look', expanded: false });
 fLook.addBinding(params, 'material', { options: { Standard: 'standard', Matte: 'matte', Clay: 'clay', Porcelain: 'porcelain', Metal: 'metal', Normals: 'normal' } }).on('change', applyMaterial);
 fLook.addBinding(params, 'meshColor', { label: 'model' }).on('change', applyMaterial);
 fLook.addBinding(params, 'ramp', { label: 'color ramp' }).on('change', applyMaterial);
