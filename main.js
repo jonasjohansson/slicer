@@ -176,8 +176,8 @@ const params = {
   // orientation
   orient: 'y',
   spinY: 0,
-  // visual gap between adjacent slices (fraction of band height, 0–0.5)
-  gap: 0.04,
+  // slab thickness as a fraction of band height (1 = touching neighbors, 0 = invisible)
+  thickness: 0.96,
 };
 
 // ---- file load ----
@@ -383,9 +383,9 @@ function rebuildSlices() {
 
   const normalVec = new THREE.Vector3();
 
-  // shrink each band slightly so adjacent slices don't share clip planes / cap planes,
-  // which avoids Z-fighting and "noisy" seams at the boundary
-  const half = step * 0.5 * (1 - Math.min(0.95, Math.max(0, params.gap)));
+  // each slice's slab is a fraction of the band height; a value < 1 leaves a
+  // visible gap between neighbors and eliminates Z-fighting at the boundary
+  const half = step * 0.5 * Math.min(1, Math.max(0.05, params.thickness));
 
   for (let i = 0; i < n; i++) {
     const center = min + (i + 0.5) * step;
@@ -820,7 +820,7 @@ const fSlice = pane.addFolder({ title: 'Slicing' });
 fSlice.addBinding(params, 'slices', { min: 2, max: 200, step: 1 }).on('change', rebuildSlices);
 fSlice.addBinding(params, 'sliceAxis', { options: { Y_horizontal: 'y', X_vertical: 'x', Z_depth: 'z' } }).on('change', rebuildSlices);
 fSlice.addBinding(params, 'fill', { options: { Shell: 'shell', Filled: 'filled' } }).on('change', rebuildSlices);
-fSlice.addBinding(params, 'gap', { label: 'gap', min: 0, max: 0.6, step: 0.005 }).on('change', rebuildSlices);
+fSlice.addBinding(params, 'thickness', { label: 'thickness', min: 0.05, max: 1, step: 0.01 }).on('change', rebuildSlices);
 fSlice.addBinding(params, 'orient', {
   label: 'up axis',
   options: { 'Y up': 'y', 'Y down': 'y-down', 'Z up': 'z', 'Z down': 'z-down', 'X up': 'x', 'X down': 'x-down' },
@@ -869,7 +869,49 @@ fSound.addBinding(params, 'noteDur', { label: 'note', options: { '64n': '64n', '
 
 pane.addButton({ title: 'Reset view' }).on('click', fitCamera);
 pane.addButton({ title: 'Screenshot' }).on('click', screenshot);
+const recordBtn = pane.addButton({ title: '● Record' });
+recordBtn.on('click', toggleRecord);
 pane.addButton({ title: 'Copy permalink' }).on('click', copyPermalink);
+
+// ---- video recorder ----
+let recorder = null;
+let recordedChunks = [];
+
+function toggleRecord() {
+  if (recorder && recorder.state === 'recording') {
+    recorder.stop();
+    return;
+  }
+  if (!renderer.domElement.captureStream) {
+    setStatus('Recording not supported in this browser', true);
+    return;
+  }
+  let mimeType = 'video/webm;codecs=vp9';
+  if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'video/webm';
+  if (MediaRecorder.isTypeSupported('video/mp4;codecs=h264')) mimeType = 'video/mp4;codecs=h264';
+
+  const stream = renderer.domElement.captureStream(60);
+  recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 16_000_000 });
+  recordedChunks = [];
+  recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
+  recorder.onstop = () => {
+    const ext = mimeType.startsWith('video/mp4') ? 'mp4' : 'webm';
+    const blob = new Blob(recordedChunks, { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `slicer-${Date.now()}.${ext}`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    recordedChunks = [];
+    recorder = null;
+    recordBtn.title = '● Record';
+    setStatus(`Saved .${ext}`);
+  };
+  recorder.start(200);
+  recordBtn.title = '■ Stop';
+  setStatus('Recording…');
+}
 
 // ---- permalink + screenshot ----
 function screenshot() {
