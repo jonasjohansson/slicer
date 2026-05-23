@@ -292,14 +292,17 @@ function mergeGeometries(geoms) {
 
 // ---- slicing ----
 function clearSlices() {
-  while (sliceGroup.children.length) {
-    const m = sliceGroup.children.pop();
-    if (m.material) {
-      if (Array.isArray(m.material)) m.material.forEach(mm => mm.dispose());
-      else m.material.dispose();
+  for (const s of slices) {
+    if (s.shell) {
+      s.shell.material.dispose();
+      // shell shares baseGeometry — don't dispose that
     }
-    if (m.geometry && m.geometry !== baseGeometry) m.geometry.dispose();
+    if (s.caps) {
+      s.caps.material.dispose();
+      s.caps.geometry.dispose();
+    }
   }
+  while (sliceGroup.children.length) sliceGroup.remove(sliceGroup.children[0]);
   slices = [];
   prevDispl = [];
 }
@@ -332,10 +335,17 @@ function applyMaterial() {
     const norm = (s.sliceCenter - bbox.min.getComponent(ai)) / span;
     const col = colorForSlice(norm);
     s.baseColor = col.clone();
-    const m = buildMaterial(col);
-    m.clippingPlanes = s.mesh.material.clippingPlanes;
-    s.mesh.material.dispose();
-    s.mesh.material = m;
+
+    const shellMat = buildMaterial(col);
+    shellMat.clippingPlanes = [s.planeMin, s.planeMax];
+    s.shell.material.dispose();
+    s.shell.material = shellMat;
+
+    if (s.caps) {
+      const capsMat = buildMaterial(col);
+      s.caps.material.dispose();
+      s.caps.material = capsMat;
+    }
   }
 }
 
@@ -365,26 +375,43 @@ function rebuildSlices() {
     const color = colorForSlice(norm);
     let mesh, planeMin = null, planeMax = null;
 
-    if (params.fill === 'filled') {
-      const slabGeom = buildSlabGeometry(baseGeometry, axisIndex, a, b);
-      if (!slabGeom) continue;
-      mesh = new THREE.Mesh(slabGeom, buildMaterial(color));
-    } else {
-      normalVec.set(0, 0, 0).setComponent(axisIndex, 1);
-      planeMin = new THREE.Plane(normalVec.clone(), -a);
-      normalVec.set(0, 0, 0).setComponent(axisIndex, -1);
-      planeMax = new THREE.Plane(normalVec.clone(), b);
+    normalVec.set(0, 0, 0).setComponent(axisIndex, 1);
+    planeMin = new THREE.Plane(normalVec.clone(), -a);
+    normalVec.set(0, 0, 0).setComponent(axisIndex, -1);
+    planeMax = new THREE.Plane(normalVec.clone(), b);
 
-      const mat = buildMaterial(color);
-      mat.clippingPlanes = [planeMin, planeMax];
-      mesh = new THREE.Mesh(baseGeometry, mat);
+    // shell — the original mesh clipped to this band (preserves surface detail)
+    const shellMat = buildMaterial(color);
+    shellMat.clippingPlanes = [planeMin, planeMax];
+    const shell = new THREE.Mesh(baseGeometry, shellMat);
+    shell.castShadow = true;
+    shell.receiveShadow = true;
+
+    if (params.fill === 'filled') {
+      // caps — flat triangulated cross-section at top and bottom Y of band
+      const capsGeom = buildCapsGeometry(baseGeometry, axisIndex, a, b);
+      if (capsGeom) {
+        const capsMat = buildMaterial(color);
+        const caps = new THREE.Mesh(capsGeom, capsMat);
+        caps.castShadow = true;
+        caps.receiveShadow = true;
+        const group = new THREE.Group();
+        group.add(shell);
+        group.add(caps);
+        sliceGroup.add(group);
+        mesh = group;
+      } else {
+        sliceGroup.add(shell);
+        mesh = shell;
+      }
+    } else {
+      sliceGroup.add(shell);
+      mesh = shell;
     }
 
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    sliceGroup.add(mesh);
     slices.push({
-      mesh, planeMin, planeMax,
+      mesh, shell, caps: (mesh !== shell) ? mesh.children[1] : null,
+      planeMin, planeMax,
       axisIndex,
       baseColor: color.clone(),
       energy: 0,
@@ -396,8 +423,10 @@ function rebuildSlices() {
   }
 }
 
-// ---- cross-section slab builder ----
-function buildSlabGeometry(geom, axisIndex, aAxis, bAxis) {
+// ---- cross-section cap builder ----
+// Returns top+bottom cap polygons at the band's Y extents. The original
+// mesh surface fills the space between, so we don't generate side walls.
+function buildCapsGeometry(geom, axisIndex, aAxis, bAxis) {
   const midAxis = (aAxis + bAxis) * 0.5;
   const pos = geom.attributes.position.array;
   const [uIdx, vIdx] = axisIndex === 0 ? [1, 2] : axisIndex === 1 ? [0, 2] : [0, 1];
@@ -449,15 +478,7 @@ function buildSlabGeometry(geom, axisIndex, aAxis, bAxis) {
       const p0 = loop[tris[i]], p1 = loop[tris[i + 1]], p2 = loop[tris[i + 2]];
       positions.push(...make3(p0[0], p0[1], yBot), ...make3(p2[0], p2[1], yBot), ...make3(p1[0], p1[1], yBot));
     }
-    for (let i = 0; i < loop.length; i++) {
-      const j = (i + 1) % loop.length;
-      const u1 = loop[i][0], v1 = loop[i][1];
-      const u2 = loop[j][0], v2 = loop[j][1];
-      const p1b = make3(u1, v1, yBot), p2b = make3(u2, v2, yBot);
-      const p1t = make3(u1, v1, yTop), p2t = make3(u2, v2, yTop);
-      positions.push(...p1b, ...p2b, ...p2t);
-      positions.push(...p1b, ...p2t, ...p1t);
-    }
+    // side walls removed — the shell mesh provides the model's curving surface
   }
   if (positions.length === 0) return null;
 
@@ -704,14 +725,15 @@ function tick() {
         s.energy *= 0.9;
         const k = 1 + s.energy * 0.05 * params.respondAmt * 2;
         s.mesh.scale.set(k, k, k);
-        const mat = s.mesh.material;
-        if (mat && mat.emissive && s.baseColor) {
-          mat.emissive.copy(s.baseColor).multiplyScalar(s.energy * params.respondAmt);
+        if (s.baseColor) {
+          const glow = s.energy * params.respondAmt;
+          if (s.shell && s.shell.material.emissive) s.shell.material.emissive.copy(s.baseColor).multiplyScalar(glow);
+          if (s.caps && s.caps.material.emissive)  s.caps.material.emissive.copy(s.baseColor).multiplyScalar(glow);
         }
       } else if (s.mesh.scale.x !== 1) {
         s.mesh.scale.set(1, 1, 1);
-        const mat = s.mesh.material;
-        if (mat && mat.emissive) mat.emissive.setScalar(0);
+        if (s.shell && s.shell.material.emissive) s.shell.material.emissive.setScalar(0);
+        if (s.caps && s.caps.material.emissive)  s.caps.material.emissive.setScalar(0);
       }
     }
   }
