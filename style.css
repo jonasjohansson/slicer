@@ -60,9 +60,12 @@ canvas { display: block; }
 
 #status.err { color: #ff7066; }
 
-/* Tweakpane container — pinned top-right */
+/* Tweakpane container — pinned top-right, scrollable when tall */
 .tp-dfwv {
   top: 16px !important;
   right: 16px !important;
   width: 280px !important;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
