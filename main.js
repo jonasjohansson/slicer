@@ -1184,19 +1184,41 @@ async function tryStartWebCodecs(canvas) {
   recState.fps = 60;
   recState.frameCount = 0;
 
-  // optional audio config — only if sound is enabled and AAC encoding works
+  // optional audio config — needs Sound on, AudioEncoder + MediaStreamTrackProcessor support
   let audioOk = false;
-  if (recState.audioDest && typeof AudioEncoder !== 'undefined' && typeof MediaStreamTrackProcessor !== 'undefined') {
-    const audioConf = { codec: 'mp4a.40.2', sampleRate: 48000, numberOfChannels: 2, bitrate: 128_000 };
-    const probe = await AudioEncoder.isConfigSupported(audioConf);
-    if (probe && probe.supported) audioOk = true;
-    recState.audioConf = audioConf;
+  let audioMuxerCodec = null;
+  if (!recState.audioDest) {
+    console.info('[recorder] audio: no MediaStreamAudioDestinationNode (enable Sound before recording)');
+  } else if (typeof AudioEncoder === 'undefined') {
+    console.info('[recorder] audio: AudioEncoder not available in this browser');
+  } else if (typeof MediaStreamTrackProcessor === 'undefined') {
+    console.info('[recorder] audio: MediaStreamTrackProcessor not available in this browser');
+  } else {
+    const tries = [
+      { codec: 'mp4a.40.2', muxer: 'aac',  name: 'AAC-LC' },
+      { codec: 'opus',      muxer: 'opus', name: 'Opus'   },
+    ];
+    for (const t of tries) {
+      try {
+        const probe = await AudioEncoder.isConfigSupported({
+          codec: t.codec, sampleRate: 48000, numberOfChannels: 2, bitrate: 128_000,
+        });
+        if (probe && probe.supported) {
+          recState.audioConf = { codec: t.codec, sampleRate: 48000, numberOfChannels: 2, bitrate: 128_000 };
+          audioMuxerCodec = t.muxer;
+          audioOk = true;
+          console.info(`[recorder] audio: using ${t.name}`);
+          break;
+        }
+      } catch (e) { /* try next */ }
+    }
+    if (!audioOk) console.warn('[recorder] audio: no supported encoder codec; recording will be silent');
   }
 
   recState.muxer = new Muxer({
     target: new ArrayBufferTarget(),
     video: { codec: pick.muxerCodec, width: recState.width, height: recState.height },
-    audio: audioOk ? { codec: 'aac', sampleRate: 48000, numberOfChannels: 2 } : undefined,
+    audio: audioOk ? { codec: audioMuxerCodec, sampleRate: 48000, numberOfChannels: 2 } : undefined,
     fastStart: 'in-memory',
   });
 
@@ -1236,6 +1258,7 @@ async function tryStartWebCodecs(canvas) {
 async function pumpAudio() {
   const reader = recState.audioReader;
   const encoder = recState.audioEncoder;
+  let encoded = 0, dropped = 0;
   while (reader && encoder && recState.active) {
     let result;
     try { result = await reader.read(); } catch (e) { break; }
@@ -1243,10 +1266,14 @@ async function pumpAudio() {
     try {
       if (encoder.state === 'configured' && encoder.encodeQueueSize < 8) {
         encoder.encode(result.value);
+        encoded++;
+      } else {
+        dropped++;
       }
-    } catch (e) { /* drop frame */ }
+    } catch (e) { dropped++; }
     result.value.close();
   }
+  console.info(`[recorder] audio: ${encoded} frames encoded, ${dropped} dropped`);
 }
 
 async function stopWebCodecs() {
