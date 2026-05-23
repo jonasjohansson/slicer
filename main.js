@@ -155,13 +155,16 @@ function buildCycGeometry() {
     const x = (xi / segX - 0.5) * w;
     for (const [z, y] of profile) positions.push(x, y, z);
   }
+  // Winding chosen so front faces upward; with side=FrontSide that makes
+  // the cyc back-cull from below — looking up from underneath, you see
+  // through the floor.
   for (let xi = 0; xi < segX; xi++) {
     for (let pi = 0; pi < Np - 1; pi++) {
       const a = xi * Np + pi;
       const b = xi * Np + (pi + 1);
       const c = (xi + 1) * Np + (pi + 1);
       const dI = (xi + 1) * Np + pi;
-      indices.push(a, b, c, a, c, dI);
+      indices.push(a, c, b, a, dI, c);
     }
   }
   const g = new THREE.BufferGeometry();
@@ -171,7 +174,7 @@ function buildCycGeometry() {
   return g;
 }
 
-const cycMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.95, metalness: 0.0 });
+const cycMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.95, metalness: 0.0, side: THREE.FrontSide });
 
 // Fade the cyc into the scene background as world-Y rises, so the back wall
 // disappears at orbit angles that would otherwise expose its silhouette.
