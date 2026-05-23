@@ -137,6 +137,14 @@ let bbox = null;
 let slices = [];
 let prevDispl = [];
 
+// recorder state — declared early so the per-frame capture hook in tick() is safe
+const recState = {
+  active: false,
+  mode: null,
+  encoder: null, muxer: null, frameCount: 0, fps: 60, width: 0, height: 0,
+  mediaRecorder: null, chunks: [], mimeType: '',
+};
+
 const params = {
   // slicing
   slices: 60,
@@ -760,6 +768,7 @@ function tick() {
 
   controls.update();
   renderer.render(scene, camera);
+  captureFrameForWebCodecs();
   requestAnimationFrame(tick);
 }
 tick();
@@ -874,43 +883,140 @@ recordBtn.on('click', toggleRecord);
 pane.addButton({ title: 'Copy permalink' }).on('click', copyPermalink);
 
 // ---- video recorder ----
-let recorder = null;
-let recordedChunks = [];
+// Path A (preferred): WebCodecs VideoEncoder → mp4-muxer = direct MP4
+// Path B (fallback):  MediaRecorder = WebM in Chrome/Firefox, MP4 in Safari
+// recState is declared near the top of the file (above tick()) so that
+// captureFrameForWebCodecs can run safely on the very first frame.
 
-function toggleRecord() {
-  if (recorder && recorder.state === 'recording') {
-    recorder.stop();
+async function toggleRecord() {
+  if (recState.active) {
+    await stopRecord();
     return;
   }
-  if (!renderer.domElement.captureStream) {
+  await startRecord();
+}
+
+async function startRecord() {
+  const canvas = renderer.domElement;
+  // try WebCodecs first
+  if (await tryStartWebCodecs(canvas)) {
+    recState.mode = 'webcodecs';
+  } else if (canvas.captureStream) {
+    startMediaRecorder(canvas);
+    recState.mode = 'mediarecorder';
+  } else {
     setStatus('Recording not supported in this browser', true);
     return;
   }
+  recState.active = true;
+  recordBtn.title = '■ Stop';
+  setStatus('Recording…');
+}
+
+async function stopRecord() {
+  if (recState.mode === 'webcodecs') await stopWebCodecs();
+  else if (recState.mode === 'mediarecorder') recState.mediaRecorder.stop();
+  recordBtn.title = '● Record';
+  recState.active = false;
+}
+
+// -- WebCodecs path --
+async function tryStartWebCodecs(canvas) {
+  if (typeof VideoEncoder === 'undefined' || !window.VideoFrame) return false;
+  // try common H.264 codec strings; fall back via isConfigSupported
+  const codecs = ['avc1.42E01F', 'avc1.4D401E', 'avc1.64001F'];
+  let chosenCodec = null;
+  for (const c of codecs) {
+    const ok = await VideoEncoder.isConfigSupported({
+      codec: c, width: canvas.width, height: canvas.height, framerate: 60, bitrate: 12_000_000,
+    });
+    if (ok && ok.supported) { chosenCodec = c; break; }
+  }
+  if (!chosenCodec) return false;
+
+  let MuxerMod;
+  try { MuxerMod = await import('mp4-muxer'); }
+  catch (e) { console.warn('mp4-muxer failed to load:', e); return false; }
+  const { Muxer, ArrayBufferTarget } = MuxerMod;
+
+  recState.width = canvas.width;
+  recState.height = canvas.height;
+  recState.fps = 60;
+  recState.frameCount = 0;
+
+  recState.muxer = new Muxer({
+    target: new ArrayBufferTarget(),
+    video: { codec: 'avc', width: recState.width, height: recState.height },
+    fastStart: 'in-memory',
+  });
+
+  recState.encoder = new VideoEncoder({
+    output: (chunk, meta) => recState.muxer.addVideoChunk(chunk, meta),
+    error: (e) => { console.error('VideoEncoder error:', e); setStatus('Encoder error: ' + e.message, true); },
+  });
+  recState.encoder.configure({
+    codec: chosenCodec,
+    width: recState.width,
+    height: recState.height,
+    framerate: recState.fps,
+    bitrate: 12_000_000,
+    avc: { format: 'avc' },
+  });
+
+  return true;
+}
+
+async function stopWebCodecs() {
+  try { await recState.encoder.flush(); } catch (e) {}
+  recState.encoder.close();
+  recState.muxer.finalize();
+  const blob = new Blob([recState.muxer.target.buffer], { type: 'video/mp4' });
+  saveBlob(blob, 'mp4');
+  recState.encoder = null;
+  recState.muxer = null;
+}
+
+// hook called from tick() while recording in WebCodecs mode
+function captureFrameForWebCodecs() {
+  if (!recState.active || recState.mode !== 'webcodecs' || !recState.encoder) return;
+  // limit queue depth to avoid backpressure
+  if (recState.encoder.encodeQueueSize > 4) return;
+  const timestamp = recState.frameCount * (1_000_000 / recState.fps);
+  const frame = new VideoFrame(renderer.domElement, { timestamp });
+  recState.encoder.encode(frame, { keyFrame: recState.frameCount % 60 === 0 });
+  frame.close();
+  recState.frameCount++;
+}
+
+// -- MediaRecorder fallback --
+function startMediaRecorder(canvas) {
   let mimeType = 'video/webm;codecs=vp9';
   if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'video/webm';
   if (MediaRecorder.isTypeSupported('video/mp4;codecs=h264')) mimeType = 'video/mp4;codecs=h264';
-
-  const stream = renderer.domElement.captureStream(60);
-  recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 16_000_000 });
-  recordedChunks = [];
-  recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
-  recorder.onstop = () => {
+  const stream = canvas.captureStream(60);
+  const mr = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 16_000_000 });
+  recState.mimeType = mimeType;
+  recState.chunks = [];
+  mr.ondataavailable = (e) => { if (e.data && e.data.size > 0) recState.chunks.push(e.data); };
+  mr.onstop = () => {
     const ext = mimeType.startsWith('video/mp4') ? 'mp4' : 'webm';
-    const blob = new Blob(recordedChunks, { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `slicer-${Date.now()}.${ext}`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
-    recordedChunks = [];
-    recorder = null;
-    recordBtn.title = '● Record';
-    setStatus(`Saved .${ext}`);
+    const blob = new Blob(recState.chunks, { type: mimeType });
+    saveBlob(blob, ext);
+    recState.chunks = [];
+    recState.mediaRecorder = null;
   };
-  recorder.start(200);
-  recordBtn.title = '■ Stop';
-  setStatus('Recording…');
+  mr.start(200);
+  recState.mediaRecorder = mr;
+}
+
+function saveBlob(blob, ext) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `slicer-${Date.now()}.${ext}`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  setStatus(`Saved .${ext}`);
 }
 
 // ---- permalink + screenshot ----
