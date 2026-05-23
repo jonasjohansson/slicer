@@ -971,6 +971,7 @@ function placeholder() {
 // up: 'y' (default), 'y-down' (flip), 'z' (Z-up scan), 'z-down', 'x', 'x-down'
 const presets = {
   'Head (Lee Perry-Smith)': { url: 'models/lee-perry-smith.glb', ext: 'glb', up: 'y' },
+  'Plato bust':             { url: 'models/plato.glb',           ext: 'glb', up: 'y', spinY: -180 },
   'Sleeping Venus':         { url: 'models/sleeping-venus.glb',  ext: 'glb', up: 'z' },
 };
 
