@@ -143,6 +143,7 @@ const recState = {
   active: false,
   mode: null,
   encoder: null, muxer: null, frameCount: 0, fps: 60, width: 0, height: 0,
+  audioDest: null, audioEncoder: null, audioReader: null,
   mediaRecorder: null, chunks: [], mimeType: '',
 };
 
@@ -188,6 +189,41 @@ const params = {
   // slab thickness as a fraction of band height (1 = touching neighbors, 0 = invisible)
   thickness: 0.96,
 };
+
+// snapshot the initial values so Reset can restore them
+const PARAM_DEFAULTS = JSON.parse(JSON.stringify(params));
+
+// hydrate from localStorage before any Tweakpane binding reads param values
+const hadPersisted = (() => {
+  try {
+    const s = localStorage.getItem('slicer:params');
+    if (!s) return false;
+    const o = JSON.parse(s);
+    for (const k of Object.keys(o)) if (k in params) params[k] = o[k];
+    return true;
+  } catch (e) { return false; }
+})();
+
+// ---- localStorage persistence ----
+const STORAGE_KEY = 'slicer:params';
+
+function savePersisted() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(params)); } catch (e) {}
+}
+
+function resetSettings() {
+  try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+  for (const k of Object.keys(PARAM_DEFAULTS)) params[k] = PARAM_DEFAULTS[k];
+  pane.refresh();
+  scene.background = new THREE.Color(params.bgColor);
+  cycMat.color.set(params.bgColor);
+  cycBgUniform.value.set(params.bgColor);
+  renderer.toneMappingExposure = params.exposure;
+  setShadowsEnabled(params.shadows);
+  applyMaterial();
+  rebuildSlices();
+  setStatus('Settings reset to defaults');
+}
 
 // ---- file load ----
 const fileInput = document.getElementById('fileInput');
@@ -631,9 +667,24 @@ function buildAudio() {
   }
   synth.maxPolyphony = 32;
   synth.volume.value = params.volume;
+
+  // tap reverb output into a MediaStreamAudioDestinationNode so the recorder
+  // can pick up audio. reverb still also feeds Tone.Destination (speakers).
+  try {
+    const rawCtx = Tone.getContext().rawContext;
+    recState.audioDest = rawCtx.createMediaStreamDestination();
+    reverb.connect(recState.audioDest);
+  } catch (e) {
+    console.warn('Audio capture dest setup failed:', e);
+    recState.audioDest = null;
+  }
 }
 
 function disposeAudio() {
+  if (reverb && recState.audioDest) {
+    try { reverb.disconnect(recState.audioDest); } catch (e) {}
+  }
+  recState.audioDest = null;
   if (synth) { try { synth.releaseAll(); } catch (e) {} synth.dispose(); synth = null; }
   if (filter) { filter.dispose(); filter = null; }
   if (reverb) { reverb.dispose(); reverb = null; }
@@ -884,6 +935,10 @@ pane.addButton({ title: 'Screenshot' }).on('click', screenshot);
 const recordBtn = pane.addButton({ title: '● Record' });
 recordBtn.on('click', toggleRecord);
 pane.addButton({ title: 'Copy permalink' }).on('click', copyPermalink);
+pane.addButton({ title: 'Reset settings' }).on('click', resetSettings);
+
+// persist every change to localStorage
+pane.on('change', savePersisted);
 
 // ---- video recorder ----
 // Path A (preferred): WebCodecs VideoEncoder → mp4-muxer = direct MP4
@@ -913,7 +968,7 @@ async function startRecord() {
   }
   recState.active = true;
   recordBtn.title = '■ Stop';
-  setStatus('Recording…');
+  setStatus(recState.audioDest ? 'Recording (with audio)…' : 'Recording (video only — enable Sound to capture audio)…');
 }
 
 async function stopRecord() {
@@ -947,9 +1002,19 @@ async function tryStartWebCodecs(canvas) {
   recState.fps = 60;
   recState.frameCount = 0;
 
+  // optional audio config — only if sound is enabled and AAC encoding works
+  let audioOk = false;
+  if (recState.audioDest && typeof AudioEncoder !== 'undefined' && typeof MediaStreamTrackProcessor !== 'undefined') {
+    const audioConf = { codec: 'mp4a.40.2', sampleRate: 48000, numberOfChannels: 2, bitrate: 128_000 };
+    const probe = await AudioEncoder.isConfigSupported(audioConf);
+    if (probe && probe.supported) audioOk = true;
+    recState.audioConf = audioConf;
+  }
+
   recState.muxer = new Muxer({
     target: new ArrayBufferTarget(),
     video: { codec: 'avc', width: recState.width, height: recState.height },
+    audio: audioOk ? { codec: 'aac', sampleRate: 48000, numberOfChannels: 2 } : undefined,
     fastStart: 'in-memory',
   });
 
@@ -966,10 +1031,48 @@ async function tryStartWebCodecs(canvas) {
     avc: { format: 'avc' },
   });
 
+  if (audioOk) {
+    recState.audioEncoder = new AudioEncoder({
+      output: (chunk, meta) => recState.muxer.addAudioChunk(chunk, meta),
+      error: (e) => { console.error('AudioEncoder error:', e); },
+    });
+    recState.audioEncoder.configure(recState.audioConf);
+
+    const audioTrack = recState.audioDest.stream.getAudioTracks()[0];
+    const proc = new MediaStreamTrackProcessor({ track: audioTrack });
+    recState.audioReader = proc.readable.getReader();
+    pumpAudio();
+  }
+
   return true;
 }
 
+async function pumpAudio() {
+  const reader = recState.audioReader;
+  const encoder = recState.audioEncoder;
+  while (reader && encoder && recState.active) {
+    let result;
+    try { result = await reader.read(); } catch (e) { break; }
+    if (result.done || !result.value) break;
+    try {
+      if (encoder.state === 'configured' && encoder.encodeQueueSize < 8) {
+        encoder.encode(result.value);
+      }
+    } catch (e) { /* drop frame */ }
+    result.value.close();
+  }
+}
+
 async function stopWebCodecs() {
+  if (recState.audioEncoder) {
+    try { await recState.audioEncoder.flush(); } catch (e) {}
+    try { recState.audioEncoder.close(); } catch (e) {}
+    recState.audioEncoder = null;
+  }
+  if (recState.audioReader) {
+    try { await recState.audioReader.cancel(); } catch (e) {}
+    recState.audioReader = null;
+  }
   try { await recState.encoder.flush(); } catch (e) {}
   recState.encoder.close();
   recState.muxer.finalize();
@@ -996,8 +1099,11 @@ function startMediaRecorder(canvas) {
   let mimeType = 'video/webm;codecs=vp9';
   if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'video/webm';
   if (MediaRecorder.isTypeSupported('video/mp4;codecs=h264')) mimeType = 'video/mp4;codecs=h264';
-  const stream = canvas.captureStream(60);
-  const mr = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 16_000_000 });
+  const videoStream = canvas.captureStream(60);
+  const tracks = videoStream.getVideoTracks().slice();
+  if (recState.audioDest) tracks.push(...recState.audioDest.stream.getAudioTracks());
+  const stream = new MediaStream(tracks);
+  const mr = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 16_000_000, audioBitsPerSecond: 128_000 });
   recState.mimeType = mimeType;
   recState.chunks = [];
   mr.ondataavailable = (e) => { if (e.data && e.data.size > 0) recState.chunks.push(e.data); };
@@ -1078,10 +1184,11 @@ fPresets.addBinding(presetState, 'which', {
   options: Object.fromEntries(presetNames.map(k => [k, k])),
 }).on('change', (ev) => loadPreset(ev.value));
 
-// apply permalink params (if any) before loading the default model
+// apply permalink params (if any) — these override localStorage
 const hadHash = applyParamsFromHash();
-if (hadHash) {
-  pane.refresh();
+// sync side effects if either source modified params
+if (hadHash || hadPersisted) {
+  if (hadHash) pane.refresh();
   scene.background = new THREE.Color(params.bgColor);
   cycMat.color.set(params.bgColor);
   cycBgUniform.value.set(params.bgColor);
