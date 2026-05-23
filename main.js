@@ -1105,9 +1105,14 @@ async function tryStartWebCodecs(canvas) {
     console.warn('[recorder] WebCodecs unavailable; falling back to MediaRecorder');
     return false;
   }
-  // H.264 needs even dimensions
-  const w = canvas.width  & ~1;
-  const h = canvas.height & ~1;
+  // Cap encode resolution: H.264 profile/level limits + many encoders top
+  // out at 4K. Long-edge 1920 keeps us safely under high@4.0/5.0 while
+  // still looking great.
+  const MAX_LONG = 1920;
+  const srcW = canvas.width, srcH = canvas.height;
+  const scale = Math.min(1, MAX_LONG / Math.max(srcW, srcH));
+  let w = Math.floor(srcW * scale) & ~1;
+  let h = Math.floor(srcH * scale) & ~1;
   if (w < 16 || h < 16) {
     console.warn('[recorder] canvas too small for H.264');
     return false;
@@ -1124,8 +1129,21 @@ async function tryStartWebCodecs(canvas) {
     if (ok && ok.supported) { chosenCodec = c; break; }
   }
   if (!chosenCodec) {
-    console.warn('[recorder] no supported H.264 codec for this canvas size; falling back');
+    console.warn(`[recorder] no supported H.264 codec for ${w}x${h}; falling back`);
     return false;
+  }
+  // if we downscaled, set up an OffscreenCanvas to blit each source frame onto
+  recState.offCanvas = null;
+  recState.offCtx = null;
+  if (scale < 1) {
+    try {
+      recState.offCanvas = new OffscreenCanvas(w, h);
+      recState.offCtx = recState.offCanvas.getContext('2d');
+      console.info(`[recorder] downscaling ${srcW}x${srcH} → ${w}x${h} for H.264`);
+    } catch (e) {
+      console.warn('[recorder] OffscreenCanvas unavailable; falling back', e);
+      return false;
+    }
   }
 
   let MuxerMod;
@@ -1221,6 +1239,8 @@ async function stopWebCodecs() {
   saveBlob(blob, 'mp4');
   recState.encoder = null;
   recState.muxer = null;
+  recState.offCanvas = null;
+  recState.offCtx = null;
 }
 
 // hook called from tick() while recording in WebCodecs mode
@@ -1228,13 +1248,23 @@ function captureFrameForWebCodecs() {
   if (!recState.active || recState.mode !== 'webcodecs' || !recState.encoder) return;
   if (recState.encoder.encodeQueueSize > 4) return;
   const timestamp = recState.frameCount * (1_000_000 / recState.fps);
+
+  // pick the source: downscaled offscreen canvas if we set one up, else the main canvas
+  let source;
+  if (recState.offCanvas) {
+    recState.offCtx.drawImage(renderer.domElement, 0, 0, recState.width, recState.height);
+    source = recState.offCanvas;
+  } else {
+    source = renderer.domElement;
+  }
+
   let frame;
   try {
-    frame = new VideoFrame(renderer.domElement, {
-      timestamp,
-      // crop to even dimensions configured for the encoder
-      visibleRect: { x: 0, y: 0, width: recState.width, height: recState.height },
-    });
+    const frameInit = { timestamp };
+    if (!recState.offCanvas) {
+      frameInit.visibleRect = { x: 0, y: 0, width: recState.width, height: recState.height };
+    }
+    frame = new VideoFrame(source, frameInit);
     recState.encoder.encode(frame, { keyFrame: recState.frameCount % 60 === 0 });
   } catch (e) {
     console.warn('[recorder] frame encode failed:', e);
