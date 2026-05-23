@@ -258,6 +258,8 @@ const params = {
   spinY: 0,
   // slab thickness as a fraction of band height (1 = touching neighbors, 0 = invisible)
   thickness: 0.78,
+  // if the browser can't encode H.264 directly, transcode WebM → MP4 via ffmpeg.wasm
+  forceMp4: false,
   // lights
   lightAmbient: 0.10,
   lightKey: 3.6,
@@ -763,7 +765,7 @@ function buildAudio() {
       envelope: { attack: 0.06, decay: 0.4, sustain: 0.2, release: 1.5 },
     }).connect(filter);
   }
-  synth.maxPolyphony = 32;
+  synth.maxPolyphony = 96;
   synth.volume.value = params.volume;
 
   // tap reverb output into a MediaStreamAudioDestinationNode so the recorder
@@ -1051,6 +1053,7 @@ pane.addButton({ title: 'Reset view' }).on('click', fitCamera);
 pane.addButton({ title: 'Screenshot' }).on('click', screenshot);
 const recordBtn = pane.addButton({ title: '● Record' });
 recordBtn.on('click', toggleRecord);
+pane.addBinding(params, 'forceMp4', { label: '↳ force MP4 (slow)' });
 pane.addButton({ title: 'Copy permalink' }).on('click', copyPermalink);
 pane.addButton({ title: 'Reset settings' }).on('click', resetSettings);
 
@@ -1287,15 +1290,59 @@ function startMediaRecorder(canvas) {
   recState.mimeType = mimeType;
   recState.chunks = [];
   mr.ondataavailable = (e) => { if (e.data && e.data.size > 0) recState.chunks.push(e.data); };
-  mr.onstop = () => {
+  mr.onstop = async () => {
     const ext = mimeType.startsWith('video/mp4') ? 'mp4' : 'webm';
-    const blob = new Blob(recState.chunks, { type: mimeType });
-    saveBlob(blob, ext);
+    let blob = new Blob(recState.chunks, { type: mimeType });
+    let finalExt = ext;
+    if (ext === 'webm' && params.forceMp4) {
+      try {
+        blob = await transcodeWebmToMp4(blob);
+        finalExt = 'mp4';
+      } catch (err) {
+        console.warn('[recorder] transcode failed:', err);
+        setStatus('Transcode failed; kept as WebM', true);
+      }
+    }
+    saveBlob(blob, finalExt);
     recState.chunks = [];
     recState.mediaRecorder = null;
   };
   mr.start(200);
   recState.mediaRecorder = mr;
+}
+
+// ffmpeg.wasm transcode for browsers that can't encode H.264 in WebCodecs
+let ffmpegInstance = null;
+async function getFFmpeg() {
+  if (ffmpegInstance) return ffmpegInstance;
+  setStatus('Loading WebM → MP4 converter (~12 MB, one time)…');
+  const { FFmpeg } = await import('https://esm.sh/@ffmpeg/ffmpeg@0.12.10');
+  const { toBlobURL } = await import('https://esm.sh/@ffmpeg/util@0.12.1');
+  const ff = new FFmpeg();
+  const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+  await ff.load({
+    coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+    wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+  });
+  ffmpegInstance = ff;
+  return ff;
+}
+
+async function transcodeWebmToMp4(webmBlob) {
+  const ff = await getFFmpeg();
+  ff.on('progress', ({ progress }) => {
+    setStatus(`Converting WebM → MP4… ${Math.round((progress || 0) * 100)}%`);
+  });
+  await ff.writeFile('in.webm', new Uint8Array(await webmBlob.arrayBuffer()));
+  await ff.exec([
+    '-i', 'in.webm',
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-b:a', '128k',
+    '-movflags', '+faststart',
+    'out.mp4',
+  ]);
+  const data = await ff.readFile('out.mp4');
+  return new Blob([data.buffer], { type: 'video/mp4' });
 }
 
 function saveBlob(blob, ext) {
