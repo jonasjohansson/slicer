@@ -228,7 +228,7 @@ const params = {
   speed: 0.5,
   freq: 1.6,
   axis: 'x',
-  rotate: true,
+  rotate: false,
   // look
   material: 'porcelain',
   meshColor: '#f0e6d5',
