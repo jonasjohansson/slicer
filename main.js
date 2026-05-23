@@ -4,6 +4,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { Pane } from 'tweakpane';
 import earcut from 'earcut';
@@ -231,6 +232,8 @@ async function loadFromUrl(url, ext) {
     const geom = await new STLLoader().loadAsync(url);
     geom.computeVertexNormals();
     object = new THREE.Mesh(geom, new THREE.MeshStandardMaterial());
+  } else if (ext === 'fbx') {
+    object = await new FBXLoader().loadAsync(url);
   } else {
     throw new Error('Unsupported format: ' + ext);
   }
