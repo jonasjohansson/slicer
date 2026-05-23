@@ -6,6 +6,9 @@ import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { Pane } from 'tweakpane';
 import earcut from 'earcut';
 import * as Tone from 'tone';
@@ -64,6 +67,70 @@ scene.add(fillLight);
 const rimLight = new THREE.DirectionalLight(0xffd8a8, 1.4);
 rimLight.position.set(-2, 3, -6);
 scene.add(rimLight);
+
+// ---- post-processing chain ----
+// Cinematic touches: subtle chromatic aberration, film grain, contrast, saturation.
+// No bloom or vignette.
+const composer = new EffectComposer(renderer);
+composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+composer.setSize(window.innerWidth, window.innerHeight);
+composer.addPass(new RenderPass(scene, camera));
+
+const postShader = {
+  uniforms: {
+    tDiffuse:    { value: null },
+    uTime:       { value: 0 },
+    uGrain:      { value: 0.04 },
+    uAberration: { value: 0.002 },
+    uContrast:   { value: 1.05 },
+    uSaturation: { value: 1.0 },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+  `,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform float uTime;
+    uniform float uGrain;
+    uniform float uAberration;
+    uniform float uContrast;
+    uniform float uSaturation;
+    varying vec2 vUv;
+
+    float hash(vec2 p) {
+      return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+    }
+
+    void main() {
+      vec2 c = vUv - vec2(0.5);
+      float r2 = dot(c, c);
+
+      // radial chromatic aberration (stronger toward edges)
+      vec2 dir = c * r2;
+      float r = texture2D(tDiffuse, vUv - dir * uAberration * 4.0).r;
+      float g = texture2D(tDiffuse, vUv).g;
+      float b = texture2D(tDiffuse, vUv + dir * uAberration * 4.0).b;
+      vec3 col = vec3(r, g, b);
+
+      // saturation around luminance
+      float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      col = mix(vec3(lum), col, uSaturation);
+
+      // contrast around 0.5 in display space
+      col = (col - 0.5) * uContrast + 0.5;
+
+      // film grain
+      float n = (hash(vUv * 1000.0 + uTime) - 0.5) * uGrain;
+      col += n;
+
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `,
+};
+
+const postPass = new ShaderPass(postShader);
+composer.addPass(postPass);
 
 // ---- backdrop: photo-studio cyclorama (curved floor → back wall) ----
 function buildCycGeometry() {
@@ -188,6 +255,19 @@ const params = {
   spinY: 0,
   // slab thickness as a fraction of band height (1 = touching neighbors, 0 = invisible)
   thickness: 0.96,
+  // lights
+  lightAmbient: 0.12,
+  lightKey: 3.2,
+  lightFill: 0.6,
+  lightRim: 1.4,
+  fillColor: '#9fb4ff',
+  rimColor: '#ffd8a8',
+  envIntensity: 1.0,
+  // post-fx
+  grain: 0.04,
+  aberration: 0.002,
+  contrast: 1.05,
+  saturation: 1.0,
 };
 
 // snapshot the initial values so Reset can restore them
@@ -211,15 +291,30 @@ function savePersisted() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(params)); } catch (e) {}
 }
 
-function resetSettings() {
-  try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
-  for (const k of Object.keys(PARAM_DEFAULTS)) params[k] = PARAM_DEFAULTS[k];
-  pane.refresh();
+function syncSideEffects() {
   scene.background = new THREE.Color(params.bgColor);
   cycMat.color.set(params.bgColor);
   cycBgUniform.value.set(params.bgColor);
   renderer.toneMappingExposure = params.exposure;
   setShadowsEnabled(params.shadows);
+  ambient.intensity = params.lightAmbient;
+  keyLight.intensity = params.lightKey;
+  fillLight.intensity = params.lightFill;
+  fillLight.color.set(params.fillColor);
+  rimLight.intensity = params.lightRim;
+  rimLight.color.set(params.rimColor);
+  scene.environmentIntensity = params.envIntensity;
+  postPass.uniforms.uGrain.value = params.grain;
+  postPass.uniforms.uAberration.value = params.aberration;
+  postPass.uniforms.uContrast.value = params.contrast;
+  postPass.uniforms.uSaturation.value = params.saturation;
+}
+
+function resetSettings() {
+  try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+  for (const k of Object.keys(PARAM_DEFAULTS)) params[k] = PARAM_DEFAULTS[k];
+  pane.refresh();
+  syncSideEffects();
   applyMaterial();
   rebuildSlices();
   setStatus('Settings reset to defaults');
@@ -823,7 +918,8 @@ function tick() {
   }
 
   controls.update();
-  renderer.render(scene, camera);
+  postPass.uniforms.uTime.value = t;
+  composer.render();
   captureFrameForWebCodecs();
   requestAnimationFrame(tick);
 }
@@ -833,6 +929,7 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setSize(window.innerWidth, window.innerHeight);
 });
 
 let paneReady = false;
@@ -916,6 +1013,21 @@ fLook.addBinding(params, 'bgColor', { label: 'background' }).on('change', () => 
 fLook.addBinding(params, 'exposure', { min: 0.2, max: 2.5, step: 0.01 }).on('change', () => renderer.toneMappingExposure = params.exposure);
 fLook.addBinding(params, 'shadows').on('change', () => setShadowsEnabled(params.shadows));
 fLook.addBinding(params, 'groundY', { label: 'ground Y', min: -3, max: 1, step: 0.01 }).on('change', () => ground.position.y = params.groundY);
+
+const fLights = pane.addFolder({ title: 'Lights', expanded: false });
+fLights.addBinding(params, 'lightKey',     { label: 'key',     min: 0, max: 8, step: 0.05 }).on('change', () => keyLight.intensity = params.lightKey);
+fLights.addBinding(params, 'lightFill',    { label: 'fill',    min: 0, max: 4, step: 0.05 }).on('change', () => fillLight.intensity = params.lightFill);
+fLights.addBinding(params, 'fillColor',    { label: '↳ color' }).on('change', () => fillLight.color.set(params.fillColor));
+fLights.addBinding(params, 'lightRim',     { label: 'rim',     min: 0, max: 4, step: 0.05 }).on('change', () => rimLight.intensity = params.lightRim);
+fLights.addBinding(params, 'rimColor',     { label: '↳ color' }).on('change', () => rimLight.color.set(params.rimColor));
+fLights.addBinding(params, 'lightAmbient', { label: 'ambient', min: 0, max: 1, step: 0.01 }).on('change', () => ambient.intensity = params.lightAmbient);
+fLights.addBinding(params, 'envIntensity', { label: 'environment', min: 0, max: 3, step: 0.01 }).on('change', () => scene.environmentIntensity = params.envIntensity);
+
+const fPost = pane.addFolder({ title: 'Post FX', expanded: false });
+fPost.addBinding(params, 'grain',      { min: 0, max: 0.2, step: 0.005 }).on('change', () => postPass.uniforms.uGrain.value = params.grain);
+fPost.addBinding(params, 'aberration', { label: 'chrom. ab.', min: 0, max: 0.01, step: 0.0002 }).on('change', () => postPass.uniforms.uAberration.value = params.aberration);
+fPost.addBinding(params, 'contrast',   { min: 0.5, max: 1.8, step: 0.01 }).on('change', () => postPass.uniforms.uContrast.value = params.contrast);
+fPost.addBinding(params, 'saturation', { min: 0, max: 2, step: 0.01 }).on('change', () => postPass.uniforms.uSaturation.value = params.saturation);
 
 const fSound = pane.addFolder({ title: 'Sound', expanded: false });
 fSound.addBinding(params, 'sound', { label: 'enable' }).on('change', async (ev) => {
@@ -1132,7 +1244,7 @@ function saveBlob(blob, ext) {
 
 // ---- permalink + screenshot ----
 function screenshot() {
-  renderer.render(scene, camera);  // ensure latest frame
+  composer.render();  // ensure latest frame (with post-fx)
   renderer.domElement.toBlob((blob) => {
     if (!blob) return;
     const url = URL.createObjectURL(blob);
@@ -1188,15 +1300,9 @@ fPresets.addBinding(presetState, 'which', {
 
 // apply permalink params (if any) — these override localStorage
 const hadHash = applyParamsFromHash();
-// sync side effects if either source modified params
-if (hadHash || hadPersisted) {
-  if (hadHash) pane.refresh();
-  scene.background = new THREE.Color(params.bgColor);
-  cycMat.color.set(params.bgColor);
-  cycBgUniform.value.set(params.bgColor);
-  renderer.toneMappingExposure = params.exposure;
-  setShadowsEnabled(params.shadows);
-}
+if (hadHash) pane.refresh();
+// sync side effects for whichever source modified params (or just init lights/post)
+if (hadHash || hadPersisted) syncSideEffects();
 
 // default model on startup — fall back to placeholder if it fails
 loadPreset(DEFAULT_PRESET).catch(() => placeholder());
