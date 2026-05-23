@@ -1187,6 +1187,8 @@ async function tryStartWebCodecs(canvas) {
   // optional audio config — needs Sound on, AudioEncoder + MediaStreamTrackProcessor support
   let audioOk = false;
   let audioMuxerCodec = null;
+  let audioSampleRate = 48000;
+  let audioChannels = 2;
   if (!recState.audioDest) {
     console.info('[recorder] audio: no MediaStreamAudioDestinationNode (enable Sound before recording)');
   } else if (typeof AudioEncoder === 'undefined') {
@@ -1194,6 +1196,10 @@ async function tryStartWebCodecs(canvas) {
   } else if (typeof MediaStreamTrackProcessor === 'undefined') {
     console.info('[recorder] audio: MediaStreamTrackProcessor not available in this browser');
   } else {
+    // match the actual Web Audio context sample rate (44100 on most Macs, 48000 on others)
+    try {
+      audioSampleRate = Tone.getContext().rawContext.sampleRate || 48000;
+    } catch (e) {}
     const tries = [
       { codec: 'mp4a.40.2', muxer: 'aac',  name: 'AAC-LC' },
       { codec: 'opus',      muxer: 'opus', name: 'Opus'   },
@@ -1201,13 +1207,13 @@ async function tryStartWebCodecs(canvas) {
     for (const t of tries) {
       try {
         const probe = await AudioEncoder.isConfigSupported({
-          codec: t.codec, sampleRate: 48000, numberOfChannels: 2, bitrate: 128_000,
+          codec: t.codec, sampleRate: audioSampleRate, numberOfChannels: audioChannels, bitrate: 128_000,
         });
         if (probe && probe.supported) {
-          recState.audioConf = { codec: t.codec, sampleRate: 48000, numberOfChannels: 2, bitrate: 128_000 };
+          recState.audioConf = { codec: t.codec, sampleRate: audioSampleRate, numberOfChannels: audioChannels, bitrate: 128_000 };
           audioMuxerCodec = t.muxer;
           audioOk = true;
-          console.info(`[recorder] audio: using ${t.name}`);
+          console.info(`[recorder] audio: using ${t.name} @ ${audioSampleRate} Hz, ${audioChannels}ch`);
           break;
         }
       } catch (e) { /* try next */ }
@@ -1218,7 +1224,7 @@ async function tryStartWebCodecs(canvas) {
   recState.muxer = new Muxer({
     target: new ArrayBufferTarget(),
     video: { codec: pick.muxerCodec, width: recState.width, height: recState.height },
-    audio: audioOk ? { codec: audioMuxerCodec, sampleRate: 48000, numberOfChannels: 2 } : undefined,
+    audio: audioOk ? { codec: audioMuxerCodec, sampleRate: audioSampleRate, numberOfChannels: audioChannels } : undefined,
     fastStart: 'in-memory',
   });
 
