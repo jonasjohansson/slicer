@@ -36,8 +36,7 @@ const envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 scene.environment = envTex;
 
 const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.01, 1000);
-// start pulled back so the first fitCamera() can ease the camera inward
-camera.position.set(0, 0.4, 14);
+camera.position.set(0, 0.5, 6);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -701,18 +700,14 @@ function setShadowsEnabled(on) {
 }
 
 // ---- camera fit ----
-let isFirstFit = true;
-let camTween = null;
-
-function fitCamera(forceSnap = false) {
+function fitCamera() {
   if (!bbox) return;
   const sphere = new THREE.Sphere();
   bbox.getBoundingSphere(sphere);
   const dist = sphere.radius / Math.sin((camera.fov * Math.PI / 180) / 2);
   const dir = new THREE.Vector3(0.3, 0.15, 1).normalize();
-  const targetPos = sphere.center.clone().addScaledVector(dir, dist * 1.4);
-  const targetCenter = sphere.center.clone();
-
+  camera.position.copy(sphere.center).addScaledVector(dir, dist * 1.4);
+  controls.target.copy(sphere.center);
   camera.near = Math.max(0.001, dist * 0.01);
   camera.far = dist * 20;
   camera.updateProjectionMatrix();
@@ -723,23 +718,7 @@ function fitCamera(forceSnap = false) {
   sc.left = -r; sc.right = r; sc.top = r; sc.bottom = -r;
   sc.far = Math.max(30, dist * 8);
   sc.updateProjectionMatrix();
-
-  if (isFirstFit && !forceSnap) {
-    isFirstFit = false;
-    camTween = {
-      fromPos: camera.position.clone(),
-      toPos: targetPos,
-      fromTarget: controls.target.clone(),
-      toTarget: targetCenter,
-      t0: clock.getElapsedTime(),
-      duration: 1.8,
-    };
-    controls.enabled = false;
-  } else {
-    camera.position.copy(targetPos);
-    controls.target.copy(targetCenter);
-    controls.update();
-  }
+  controls.update();
 }
 
 // ---- audio (Tone.js) ----
@@ -935,18 +914,6 @@ function tick() {
         if (s.shell && s.shell.material.emissive) s.shell.material.emissive.setScalar(0);
         if (s.caps && s.caps.material.emissive)  s.caps.material.emissive.setScalar(0);
       }
-    }
-  }
-
-  // camera intro tween (overrides controls during the animation)
-  if (camTween) {
-    const tt = Math.min(1, (clock.getElapsedTime() - camTween.t0) / camTween.duration);
-    const e = 1 - Math.pow(1 - tt, 3);   // ease-out cubic
-    camera.position.lerpVectors(camTween.fromPos, camTween.toPos, e);
-    controls.target.lerpVectors(camTween.fromTarget, camTween.toTarget, e);
-    if (tt >= 1) {
-      camTween = null;
-      controls.enabled = true;
     }
   }
 
