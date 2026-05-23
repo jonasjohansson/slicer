@@ -104,6 +104,26 @@ function buildCycGeometry() {
 }
 
 const cycMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.95, metalness: 0.0 });
+
+// Fade the cyc into the scene background as world-Y rises, so the back wall
+// disappears at orbit angles that would otherwise expose its silhouette.
+// Shadows on the still-visible floor portion stay intact.
+const cycBgUniform = { value: new THREE.Color(0x0a0a0a) };
+const cycFadeStart = { value: 0.2 };
+const cycFadeEnd   = { value: 4.5 };
+cycMat.onBeforeCompile = (shader) => {
+  shader.uniforms.cycBg = cycBgUniform;
+  shader.uniforms.cycFadeStart = cycFadeStart;
+  shader.uniforms.cycFadeEnd = cycFadeEnd;
+  shader.vertexShader = shader.vertexShader
+    .replace('void main() {', 'varying float vCycY;\nvoid main() {')
+    .replace('#include <project_vertex>', '#include <project_vertex>\nvCycY = (modelMatrix * vec4(transformed, 1.0)).y;');
+  shader.fragmentShader = shader.fragmentShader
+    .replace('void main() {', 'varying float vCycY;\nuniform vec3 cycBg;\nuniform float cycFadeStart;\nuniform float cycFadeEnd;\nvoid main() {')
+    .replace('#include <dithering_fragment>',
+      'float cycF = smoothstep(cycFadeStart, cycFadeEnd, vCycY); gl_FragColor.rgb = mix(gl_FragColor.rgb, cycBg, cycF);\n#include <dithering_fragment>');
+};
+
 const ground = new THREE.Mesh(buildCycGeometry(), cycMat);
 ground.position.y = -1.05;
 ground.receiveShadow = true;
@@ -826,6 +846,7 @@ fLook.addBinding(params, 'respondAmt', { label: '↳ amount', min: 0, max: 1, st
 fLook.addBinding(params, 'bgColor', { label: 'background' }).on('change', () => {
   scene.background = new THREE.Color(params.bgColor);
   cycMat.color.set(params.bgColor);
+  cycBgUniform.value.set(params.bgColor);
 });
 fLook.addBinding(params, 'exposure', { min: 0.2, max: 2.5, step: 0.01 }).on('change', () => renderer.toneMappingExposure = params.exposure);
 fLook.addBinding(params, 'shadows').on('change', () => setShadowsEnabled(params.shadows));
@@ -912,6 +933,7 @@ if (hadHash) {
   pane.refresh();
   scene.background = new THREE.Color(params.bgColor);
   cycMat.color.set(params.bgColor);
+  cycBgUniform.value.set(params.bgColor);
   renderer.toneMappingExposure = params.exposure;
   setShadowsEnabled(params.shadows);
 }
