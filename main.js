@@ -1120,21 +1120,34 @@ async function tryStartWebCodecs(canvas) {
     console.warn('[recorder] canvas too small for H.264');
     return false;
   }
-  const codecs = ['avc1.640028', 'avc1.4D401F', 'avc1.42E01F', 'avc1.4D401E', 'avc1.64001F'];
-  let chosenCodec = null;
+  // Try HEVC (hev1/hvc1) before H.264 — Chrome on macOS 14+ does HEVC via
+  // VideoToolbox even when H.264 encoding isn't exposed through WebCodecs.
+  // mp4-muxer accepts either 'hevc' or 'avc' as its video codec key.
+  const codecs = [
+    { codec: 'hev1.1.6.L153.B0', muxerCodec: 'hevc' }, // HEVC Main L5.1 — up to 8K
+    { codec: 'hev1.1.6.L120.B0', muxerCodec: 'hevc' }, // HEVC Main L4 — up to 4K
+    { codec: 'hvc1.1.6.L120.B0', muxerCodec: 'hevc' },
+    { codec: 'avc1.640033',      muxerCodec: 'avc'  }, // H.264 High L5.1
+    { codec: 'avc1.640028',      muxerCodec: 'avc'  }, // H.264 High L4
+    { codec: 'avc1.4D401F',      muxerCodec: 'avc'  }, // H.264 Main L3.1
+    { codec: 'avc1.42E01F',      muxerCodec: 'avc'  }, // H.264 Baseline L3.1
+  ];
+  let pick = null;
   for (const c of codecs) {
     let ok;
     try {
       ok = await VideoEncoder.isConfigSupported({
-        codec: c, width: w, height: h, framerate: 60, bitrate: 12_000_000,
+        codec: c.codec, width: w, height: h, framerate: 60, bitrate: 12_000_000,
       });
     } catch (e) { continue; }
-    if (ok && ok.supported) { chosenCodec = c; break; }
+    if (ok && ok.supported) { pick = c; break; }
   }
-  if (!chosenCodec) {
-    console.warn(`[recorder] no supported H.264 codec for ${w}x${h}; falling back`);
+  if (!pick) {
+    console.warn(`[recorder] no supported H.264/HEVC codec for ${w}x${h}; falling back`);
     return false;
   }
+  console.info(`[recorder] using ${pick.codec}`);
+  const chosenCodec = pick.codec;
   // if we downscaled, set up an OffscreenCanvas to blit each source frame onto
   recState.offCanvas = null;
   recState.offCtx = null;
@@ -1170,7 +1183,7 @@ async function tryStartWebCodecs(canvas) {
 
   recState.muxer = new Muxer({
     target: new ArrayBufferTarget(),
-    video: { codec: 'avc', width: recState.width, height: recState.height },
+    video: { codec: pick.muxerCodec, width: recState.width, height: recState.height },
     audio: audioOk ? { codec: 'aac', sampleRate: 48000, numberOfChannels: 2 } : undefined,
     fastStart: 'in-memory',
   });
@@ -1186,7 +1199,6 @@ async function tryStartWebCodecs(canvas) {
       height: recState.height,
       framerate: recState.fps,
       bitrate: 12_000_000,
-      avc: { format: 'avc' },
     });
   } catch (e) {
     console.warn('[recorder] VideoEncoder.configure failed:', e);
