@@ -1319,10 +1319,13 @@ async function getFFmpeg() {
   const { FFmpeg } = await import('https://esm.sh/@ffmpeg/ffmpeg@0.12.10');
   const { toBlobURL } = await import('https://esm.sh/@ffmpeg/util@0.12.1');
   const ff = new FFmpeg();
-  const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+  // wrap every cross-origin URL in toBlobURL so Worker / module loads are same-origin
+  const ffURL   = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm';
+  const coreURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
   await ff.load({
-    coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-    wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+    classWorkerURL: await toBlobURL(`${ffURL}/worker.js`,         'text/javascript'),
+    coreURL:        await toBlobURL(`${coreURL}/ffmpeg-core.js`,   'text/javascript'),
+    wasmURL:        await toBlobURL(`${coreURL}/ffmpeg-core.wasm`, 'application/wasm'),
   });
   ffmpegInstance = ff;
   return ff;
