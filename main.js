@@ -1259,7 +1259,10 @@ async function pumpAudio() {
   const reader = recState.audioReader;
   const encoder = recState.audioEncoder;
   let encoded = 0, dropped = 0;
-  while (reader && encoder && recState.active) {
+  // Don't gate on recState.active: pumpAudio is launched from tryStartWebCodecs
+  // before active becomes true (race). Loop exits when stopWebCodecs cancels
+  // the reader, which makes read() resolve { done: true }.
+  while (reader && encoder) {
     let result;
     try { result = await reader.read(); } catch (e) { break; }
     if (result.done || !result.value) break;
