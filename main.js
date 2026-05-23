@@ -898,7 +898,7 @@ function copyPermalink() {
 
 // presets folder (load on selection — no separate Load button)
 const presetNames = Object.keys(presets);
-const DEFAULT_PRESET = 'Sleeping Venus';
+const DEFAULT_PRESET = 'Head (Lee Perry-Smith)';
 const presetState = { which: DEFAULT_PRESET };
 const fPresets = pane.addFolder({ title: 'Presets', expanded: true });
 fPresets.addBinding(presetState, 'which', {
