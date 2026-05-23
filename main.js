@@ -788,12 +788,14 @@ function tick() {
 
       s.mesh.position.set(offX, offY, offZ);
 
-      // rising-edge peak detection — drives both audio + visual response
+      // rising-edge peak detection — drives both audio + visual response,
+      // but only when sound is actually playing
       const displ = Math.abs(offX) + Math.abs(offZ) + Math.abs(offY);
-      const peaked = (i % params.skip === 0) && displ > threshold && prevDispl[i] <= threshold;
+      const peaked = audioOn && (i % params.skip === 0)
+                     && displ > threshold && prevDispl[i] <= threshold;
       if (peaked) {
         s.energy = 1;
-        if (audioOn && triggerBudget > 0) {
+        if (triggerBudget > 0) {
           const freq = noteForSlice(i, slices.length);
           const vel = Math.min(1, 0.3 + displ * 0.5);
           try { synth.triggerAttackRelease(freq, params.noteDur, undefined, vel); } catch (e) {}
