@@ -773,10 +773,6 @@ function placeholder() {
 // up: 'y' (default), 'y-down' (flip), 'z' (Z-up scan), 'z-down', 'x', 'x-down'
 const presets = {
   'Head (Lee Perry-Smith)': { url: 'models/lee-perry-smith.glb', ext: 'glb', up: 'y' },
-  'Actaeon':                { url: 'models/actaeon.glb',         ext: 'glb', up: 'y-down' },
-  'Plato bust':             { url: 'models/plato.glb',           ext: 'glb', up: 'y',     spinY: -180 },
-  'Pan':                    { url: 'models/pan.glb',             ext: 'glb', up: 'z',     spinY: -180 },
-  'Aion (Louvre)':          { url: 'models/aion.glb',            ext: 'glb', up: 'z',     spinY: -180 },
   'Sleeping Venus':         { url: 'models/sleeping-venus.glb',  ext: 'glb', up: 'z' },
 };
 
@@ -902,7 +898,7 @@ function copyPermalink() {
 
 // presets folder (load on selection — no separate Load button)
 const presetNames = Object.keys(presets);
-const DEFAULT_PRESET = 'Plato bust';
+const DEFAULT_PRESET = 'Sleeping Venus';
 const presetState = { which: DEFAULT_PRESET };
 const fPresets = pane.addFolder({ title: 'Presets', expanded: true });
 fPresets.addBinding(presetState, 'which', {
