@@ -701,7 +701,10 @@ function signedArea(loop) {
 function setShadowsEnabled(on) {
   renderer.shadowMap.enabled = on;
   keyLight.castShadow = on;
-  for (const s of slices) s.mesh.material.needsUpdate = true;
+  for (const s of slices) {
+    if (s.shell) s.shell.material.needsUpdate = true;
+    if (s.caps)  s.caps.material.needsUpdate = true;
+  }
 }
 
 // ---- camera fit ----
@@ -781,11 +784,19 @@ function buildAudio() {
 }
 
 function disposeAudio() {
+  // cancel any pending scheduled events first so they don't fire on a
+  // disposed synth (source of the 'Synth was already disposed' spam)
+  try { Tone.getTransport().cancel(0); } catch (e) {}
   if (reverb && recState.audioDest) {
     try { reverb.disconnect(recState.audioDest); } catch (e) {}
   }
   recState.audioDest = null;
-  if (synth) { try { synth.releaseAll(); } catch (e) {} synth.dispose(); synth = null; }
+  if (synth) {
+    try { synth.releaseAll(); } catch (e) {}
+    // small delay before dispose so attack envelopes can release cleanly
+    const dead = synth; synth = null;
+    setTimeout(() => { try { dead.dispose(); } catch (e) {} }, 200);
+  }
   if (filter) { filter.dispose(); filter = null; }
   if (reverb) { reverb.dispose(); reverb = null; }
 }
