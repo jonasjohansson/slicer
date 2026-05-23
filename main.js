@@ -1085,7 +1085,11 @@ async function startRecord() {
   }
   recState.active = true;
   recordBtn.title = '■ Stop';
-  setStatus(recState.audioDest ? 'Recording (with audio)…' : 'Recording (video only — enable Sound to capture audio)…');
+  const fmt = recState.mode === 'webcodecs' ? 'MP4'
+            : (recState.mimeType && recState.mimeType.startsWith('video/mp4')) ? 'MP4'
+            : 'WebM';
+  const audio = recState.audioDest ? ' + audio' : ' (no audio — enable Sound)';
+  setStatus(`Recording ${fmt}${audio}…`);
 }
 
 async function stopRecord() {
@@ -1097,25 +1101,40 @@ async function stopRecord() {
 
 // -- WebCodecs path --
 async function tryStartWebCodecs(canvas) {
-  if (typeof VideoEncoder === 'undefined' || !window.VideoFrame) return false;
-  // try common H.264 codec strings; fall back via isConfigSupported
-  const codecs = ['avc1.42E01F', 'avc1.4D401E', 'avc1.64001F'];
+  if (typeof VideoEncoder === 'undefined' || !window.VideoFrame) {
+    console.warn('[recorder] WebCodecs unavailable; falling back to MediaRecorder');
+    return false;
+  }
+  // H.264 needs even dimensions
+  const w = canvas.width  & ~1;
+  const h = canvas.height & ~1;
+  if (w < 16 || h < 16) {
+    console.warn('[recorder] canvas too small for H.264');
+    return false;
+  }
+  const codecs = ['avc1.640028', 'avc1.4D401F', 'avc1.42E01F', 'avc1.4D401E', 'avc1.64001F'];
   let chosenCodec = null;
   for (const c of codecs) {
-    const ok = await VideoEncoder.isConfigSupported({
-      codec: c, width: canvas.width, height: canvas.height, framerate: 60, bitrate: 12_000_000,
-    });
+    let ok;
+    try {
+      ok = await VideoEncoder.isConfigSupported({
+        codec: c, width: w, height: h, framerate: 60, bitrate: 12_000_000,
+      });
+    } catch (e) { continue; }
     if (ok && ok.supported) { chosenCodec = c; break; }
   }
-  if (!chosenCodec) return false;
+  if (!chosenCodec) {
+    console.warn('[recorder] no supported H.264 codec for this canvas size; falling back');
+    return false;
+  }
 
   let MuxerMod;
   try { MuxerMod = await import('mp4-muxer'); }
-  catch (e) { console.warn('mp4-muxer failed to load:', e); return false; }
+  catch (e) { console.warn('[recorder] mp4-muxer failed to load:', e); return false; }
   const { Muxer, ArrayBufferTarget } = MuxerMod;
 
-  recState.width = canvas.width;
-  recState.height = canvas.height;
+  recState.width = w;
+  recState.height = h;
   recState.fps = 60;
   recState.frameCount = 0;
 
@@ -1139,14 +1158,19 @@ async function tryStartWebCodecs(canvas) {
     output: (chunk, meta) => recState.muxer.addVideoChunk(chunk, meta),
     error: (e) => { console.error('VideoEncoder error:', e); setStatus('Encoder error: ' + e.message, true); },
   });
-  recState.encoder.configure({
-    codec: chosenCodec,
-    width: recState.width,
-    height: recState.height,
-    framerate: recState.fps,
-    bitrate: 12_000_000,
-    avc: { format: 'avc' },
-  });
+  try {
+    recState.encoder.configure({
+      codec: chosenCodec,
+      width: recState.width,
+      height: recState.height,
+      framerate: recState.fps,
+      bitrate: 12_000_000,
+      avc: { format: 'avc' },
+    });
+  } catch (e) {
+    console.warn('[recorder] VideoEncoder.configure failed:', e);
+    return false;
+  }
 
   if (audioOk) {
     recState.audioEncoder = new AudioEncoder({
@@ -1202,12 +1226,21 @@ async function stopWebCodecs() {
 // hook called from tick() while recording in WebCodecs mode
 function captureFrameForWebCodecs() {
   if (!recState.active || recState.mode !== 'webcodecs' || !recState.encoder) return;
-  // limit queue depth to avoid backpressure
   if (recState.encoder.encodeQueueSize > 4) return;
   const timestamp = recState.frameCount * (1_000_000 / recState.fps);
-  const frame = new VideoFrame(renderer.domElement, { timestamp });
-  recState.encoder.encode(frame, { keyFrame: recState.frameCount % 60 === 0 });
-  frame.close();
+  let frame;
+  try {
+    frame = new VideoFrame(renderer.domElement, {
+      timestamp,
+      // crop to even dimensions configured for the encoder
+      visibleRect: { x: 0, y: 0, width: recState.width, height: recState.height },
+    });
+    recState.encoder.encode(frame, { keyFrame: recState.frameCount % 60 === 0 });
+  } catch (e) {
+    console.warn('[recorder] frame encode failed:', e);
+  } finally {
+    if (frame) frame.close();
+  }
   recState.frameCount++;
 }
 
