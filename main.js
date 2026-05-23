@@ -1226,6 +1226,9 @@ async function tryStartWebCodecs(canvas) {
     video: { codec: pick.muxerCodec, width: recState.width, height: recState.height },
     audio: audioOk ? { codec: audioMuxerCodec, sampleRate: audioSampleRate, numberOfChannels: audioChannels } : undefined,
     fastStart: 'in-memory',
+    // audio frames from MediaStreamTrackProcessor carry document-age timestamps;
+    // shift each track so its first chunk lands at t=0 (mp4-muxer requirement)
+    firstTimestampBehavior: 'offset',
   });
 
   recState.encoder = new VideoEncoder({
